@@ -4,6 +4,13 @@ services:
     runtime: python
     buildCommand: ""
     startCommand: python main.py
+    plan: free
     envVars:
       - key: PORT
         value: 5000
+      - key: CLIENT_ID
+        value: 2d0df75c-6bc1-446f-bcf0-a22aea96c9b3
+      - key: CLIENT_SECRET
+        value: U7p8Q~vHMHQyI8ZpZu5-R7CaaPV_pXOSwvXgTakG
+      - key: TENANT_ID
+        value: 22438506-028b-45c7-9bd3-8badf683d7e3
