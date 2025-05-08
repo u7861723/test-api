@@ -13,9 +13,9 @@ app.secret_key = os.urandom(24)
 app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 
-CLIENT_ID = "2d0df75c-6bc1-446f-bcf0-a22aea96c9b3"
-CLIENT_SECRET = "U7p8Q~vHMHQyI8ZpZu5-R7CaaPV_pXOSwvXgTakG"
-TENANT_ID = "22438506-028b-45c7-9bd3-8badf683d7e3"
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+TENANT_ID = os.getenv("TENANT_ID")
 REDIRECT_URI = "https://test-api-aht9.onrender.com/callback"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPE = "openid profile email OnlineMeetings.Read OnlineMeetingTranscript.Read.All Calendars.Read User.Read"
@@ -96,19 +96,24 @@ def meetings():
                 transcript_id = transcript_list[0]["id"]
                 content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
                 content_headers = headers.copy()
-                content_headers["Accept"] = "text/vtt"
+                content_headers["Accept"] = "application/json"
                 content_resp = requests.get(content_url, headers=content_headers)
+
                 if content_resp.status_code == 200:
-                    transcript_text = f"<details><summary>📝 Transcript</summary><pre>{content_resp.text}</pre></details>"
+                    content_json = content_resp.json()
+                    phrases = content_json.get("recognizedPhrases", [])
+                    transcript_text = "<details><summary>📝 Transcript</summary><ul>"
+                    for phrase in phrases:
+                        speaker = phrase.get("speaker", "Unknown")
+                        text = phrase.get("text", "")
+                        transcript_text += f"<li><strong>{speaker}:</strong> {text}</li>"
+                    transcript_text += "</ul></details>"
 
         output += f"<li>{subject} - Join Link: {join_url} {transcript_text}</li>"
 
     output += "</ul>"
     return output
 
-import os
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
