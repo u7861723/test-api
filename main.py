@@ -115,6 +115,68 @@ def callback():
     else:
         return f"❌ Token error: {token_response}", 400
 
+# @app.route("/meetings")
+# def meetings():
+#     token = session.get("access_token")
+#     if not token:
+#         return redirect("/login")
+
+#     headers = {"Authorization": f"Bearer {token}"}
+#     output = "<h2>📅 Past 30 Days Events</h2><ul>"
+
+#     start = datetime.utcnow() - timedelta(days=30)
+#     end = datetime.utcnow()
+#     url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
+#     events_resp = requests.get(url, headers=headers).json()
+
+#     for event in events_resp.get("value", []):
+#         subject = event.get("subject", "None")
+#         join_url = event.get("onlineMeeting") and event["onlineMeeting"].get("joinUrl")
+#         if not join_url:
+#             continue
+
+#         encoded_url = urllib.parse.quote(join_url, safe="")
+#         meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
+#         meeting_resp = requests.get(meeting_lookup_url, headers=headers).json()
+#         meetings = meeting_resp.get("value", [])
+
+#         transcript_html = ""
+#         if meetings:
+#             meeting_id = meetings[0]["id"]
+#             transcripts_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
+#             transcripts_resp = requests.get(transcripts_url, headers=headers).json()
+#             transcript_list = transcripts_resp.get("value", [])
+
+#             if transcript_list:
+#                 transcript_id = transcript_list[0]["id"]
+#                 content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
+#                 content_headers = headers.copy()
+#                 content_headers["Accept"] = "text/vtt"
+#                 content_resp = requests.get(content_url, headers=content_headers)
+
+#                 if content_resp.status_code == 200:
+#                     vtt_text = content_resp.text
+
+#                     try:
+#                         # 🤖 Use AI to summarize transcript
+#                         ai_summary = analyze_meeting_transcript(vtt_text)
+#                         transcript_html = (
+#                             f"<details><summary>🤖 AI Summary</summary><pre>{ai_summary}</pre></details>"
+#                             + parse_vtt_with_speakers(vtt_text)
+#                         )
+#                     except Exception as e:
+#                         transcript_html = f"<i>AI Summary failed: {str(e)}</i>"
+#                 else:
+#                     transcript_html = "<i>Transcript content not available.</i>"
+#             else:
+#                 transcript_html = "<i>No transcript found.</i>"
+#         else:
+#             transcript_html = "<i>You're not the organizer. Cannot access transcript.</i>"
+
+#         output += f"<li><strong>{subject}</strong><br>Join Link: <a href='{join_url}' target='_blank'>{join_url}</a><br>{transcript_html}</li>"
+
+#     output += "</ul>"
+#     return output
 @app.route("/meetings")
 def meetings():
     token = session.get("access_token")
@@ -124,14 +186,15 @@ def meetings():
     headers = {"Authorization": f"Bearer {token}"}
     output = "<h2>📅 Past 30 Days Events</h2><ul>"
 
+    # 获取近 30 天会议
     start = datetime.utcnow() - timedelta(days=30)
     end = datetime.utcnow()
-    url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
-    events_resp = requests.get(url, headers=headers).json()
+    calendar_url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
+    events_resp = requests.get(calendar_url, headers=headers).json()
 
     for event in events_resp.get("value", []):
         subject = event.get("subject", "None")
-        join_url = event.get("onlineMeeting") and event["onlineMeeting"].get("joinUrl")
+        join_url = event.get("onlineMeeting", {}).get("joinUrl")
         if not join_url:
             continue
 
@@ -151,27 +214,37 @@ def meetings():
                 transcript_id = transcript_list[0]["id"]
                 content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
                 content_headers = headers.copy()
-                content_headers["Accept"] = "text/vtt"
+                content_headers["Accept"] = "application/json"
+
                 content_resp = requests.get(content_url, headers=content_headers)
-
                 if content_resp.status_code == 200:
-                    vtt_text = content_resp.text
+                    content_json = content_resp.json()
+                    phrases = content_json.get("recognizedPhrases", [])
 
+                    full_transcript = ""
+                    speaker_transcript = "<details><summary>🗣️ Full Transcript</summary><ul>"
+                    for phrase in phrases:
+                        speaker = phrase.get("speaker", "Unknown")
+                        text = phrase.get("text", "")
+                        speaker_transcript += f"<li><strong>{speaker}:</strong> {text}</li>"
+                        full_transcript += f"{speaker}: {text}\n"
+                    speaker_transcript += "</ul></details>"
+
+                    # 调用 AI 总结
                     try:
-                        # 🤖 Use AI to summarize transcript
-                        ai_summary = analyze_meeting_transcript(vtt_text)
+                        ai_summary = analyze_meeting_transcript(full_transcript)
                         transcript_html = (
                             f"<details><summary>🤖 AI Summary</summary><pre>{ai_summary}</pre></details>"
-                            + parse_vtt_with_speakers(vtt_text)
+                            + speaker_transcript
                         )
                     except Exception as e:
-                        transcript_html = f"<i>AI Summary failed: {str(e)}</i>"
+                        transcript_html = f"<i>AI Summary failed: {str(e)}</i>" + speaker_transcript
                 else:
-                    transcript_html = "<i>Transcript content not available.</i>"
+                    transcript_html = f"<i>Transcript content not available. Status: {content_resp.status_code}</i>"
             else:
                 transcript_html = "<i>No transcript found.</i>"
         else:
-            transcript_html = "<i>You're not the organizer. Cannot access transcript.</i>"
+            transcript_html = "<i>You’re not the organizer. Cannot access transcript.</i>"
 
         output += f"<li><strong>{subject}</strong><br>Join Link: <a href='{join_url}' target='_blank'>{join_url}</a><br>{transcript_html}</li>"
 
