@@ -6,6 +6,31 @@ import os
 import urllib.parse
 from datetime import datetime, timedelta
 
+def parse_vtt_with_speakers(vtt_text):
+    lines = vtt_text.strip().splitlines()
+    transcript_html = "<details><summary>📝 Transcript</summary><ul>"
+
+    cue = []
+    for line in lines:
+        if "-->" in line:
+            cue = []
+        elif line.strip() == "":
+            if cue:
+                for entry in cue:
+                    match = re.match(r"<v\s+([^>]+)>(.*)", entry)
+                    if match:
+                        speaker, text = match.groups()
+                        transcript_html += f"<li><strong>{speaker}:</strong> {text.strip()}</li>"
+                    else:
+                        transcript_html += f"<li>{entry.strip()}</li>"
+            cue = []
+        else:
+            cue.append(line)
+
+    transcript_html += "</ul></details>"
+    return transcript_html
+
+
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
@@ -16,7 +41,7 @@ Session(app)
 CLIENT_ID = "2d0df75c-6bc1-446f-bcf0-a22aea96c9b3"
 CLIENT_SECRET = "U7p8Q~vHMHQyI8ZpZu5-R7CaaPV_pXOSwvXgTakG"
 TENANT_ID = "22438506-028b-45c7-9bd3-8badf683d7e3"
-REDIRECT_URI = "https://test-api-aht9.onrender.com/callback"
+REDIRECT_URI = "http://https://test-api-aht9.onrender.com/callback"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPE = "openid profile email OnlineMeetings.Read OnlineMeetingTranscript.Read.All Calendars.Read User.Read"
 
@@ -66,13 +91,12 @@ def meetings():
         return redirect("/login")
 
     headers = {"Authorization": f"Bearer {token}"}
+    output = "<h2>📅 Past 30 Days Events</h2><ul>"
 
-    # 获取近 30 天会议事件
     start = datetime.utcnow() - timedelta(days=30)
     end = datetime.utcnow()
     url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
     events_resp = requests.get(url, headers=headers).json()
-    output = "<h2>📅 Past 30 Days Events</h2><ul>"
 
     for event in events_resp.get("value", []):
         subject = event.get("subject", "None")
@@ -98,15 +122,22 @@ def meetings():
                 content_headers = headers.copy()
                 content_headers["Accept"] = "text/vtt"
                 content_resp = requests.get(content_url, headers=content_headers)
-                if content_resp.status_code == 200:
-                    transcript_text = f"<details><summary>📝 Transcript</summary><pre>{content_resp.text}</pre></details>"
 
-        output += f"<li>{subject} - Join Link: {join_url} {transcript_text}</li>"
+                if content_resp.status_code == 200:
+                    vtt_text = content_resp.text
+                    transcript_text = parse_vtt_with_speakers(vtt_text)
+                else:
+                    transcript_text = "<i>Transcript content not available.</i>"
+            else:
+                transcript_text = "<i>No transcript found.</i>"
+        else:
+            transcript_text = "<i>You're not the organizer. Cannot access transcript.</i>"
+
+        output += f"<li>{subject} - Join Link: {join_url}<br>{transcript_text}</li>"
 
     output += "</ul>"
     return output
 
-import os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
