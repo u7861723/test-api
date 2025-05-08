@@ -42,7 +42,7 @@ Session(app)
 CLIENT_ID = "2d0df75c-6bc1-446f-bcf0-a22aea96c9b3"
 CLIENT_SECRET = "U7p8Q~vHMHQyI8ZpZu5-R7CaaPV_pXOSwvXgTakG"
 TENANT_ID = "22438506-028b-45c7-9bd3-8badf683d7e3"
-REDIRECT_URI = "http://https://test-api-aht9.onrender.com/callback"
+REDIRECT_URI = "https://test-api-aht9.onrender.com/callback"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPE = "openid profile email OnlineMeetings.Read OnlineMeetingTranscript.Read.All Calendars.Read User.Read"
 
