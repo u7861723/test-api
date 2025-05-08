@@ -5,6 +5,7 @@ import uuid
 import os
 import urllib.parse
 from datetime import datetime, timedelta
+import re
 
 def parse_vtt_with_speakers(vtt_text):
     lines = vtt_text.strip().splitlines()
