@@ -96,23 +96,17 @@ def meetings():
                 transcript_id = transcript_list[0]["id"]
                 content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
                 content_headers = headers.copy()
-                content_headers["Accept"] = "application/json"
+                content_headers["Accept"] = "text/vtt"
                 content_resp = requests.get(content_url, headers=content_headers)
-
                 if content_resp.status_code == 200:
-                    content_json = content_resp.json()
-                    phrases = content_json.get("recognizedPhrases", [])
-                    transcript_text = "<details><summary>📝 Transcript</summary><ul>"
-                    for phrase in phrases:
-                        speaker = phrase.get("speaker", "Unknown")
-                        text = phrase.get("text", "")
-                        transcript_text += f"<li><strong>{speaker}:</strong> {text}</li>"
-                    transcript_text += "</ul></details>"
+                    transcript_text = f"<details><summary>📝 Transcript</summary><pre>{content_resp.text}</pre></details>"
 
         output += f"<li>{subject} - Join Link: {join_url} {transcript_text}</li>"
 
     output += "</ul>"
     return output
+
+import os
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
