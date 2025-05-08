@@ -6,11 +6,43 @@ import os
 import urllib.parse
 from datetime import datetime, timedelta
 import re
+from openai import OpenAI
+
+# ✅ DeepSeek client
+client = OpenAI(
+    api_key="sk-95aca95db16343f4a019f3b3b8c8c76f",  # Your key
+    base_url="https://api.deepseek.com"
+)
+
+def analyze_meeting_transcript(transcript_text):
+    prompt = f"""
+You are a smart meeting assistant.
+Given the transcript below, please:
+1. Give the date and title of the meeting.
+2. Provide a concise **meeting summary**.
+3. List **meeting minutes** with time-order key points.
+4. List what we have done and what we need to do in the future.
+5. Identify any **next steps or action items**, action items should be in detailed description and assign responsible people if mentioned.
+
+Transcript:
+\"\"\"
+{transcript_text}
+\"\"\"
+"""
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[
+            {"role": "system", "content": "You are a helpful AI meeting assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        stream=False
+    )
+    return response.choices[0].message.content
+
 
 def parse_vtt_with_speakers(vtt_text):
     lines = vtt_text.strip().splitlines()
-    transcript_html = "<details><summary>📝 Transcript</summary><ul>"
-
+    transcript_html = "<details><summary>🗣️ Full Transcript</summary><ul>"
     cue = []
     for line in lines:
         if "-->" in line:
@@ -27,15 +59,13 @@ def parse_vtt_with_speakers(vtt_text):
             cue = []
         else:
             cue.append(line)
-
     transcript_html += "</ul></details>"
     return transcript_html
 
 
+# ✅ Flask App Setup
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
-
-# 使用服务器端 Session 存储，防止 Cookie 丢失
 app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 
@@ -110,7 +140,7 @@ def meetings():
         meeting_resp = requests.get(meeting_lookup_url, headers=headers).json()
         meetings = meeting_resp.get("value", [])
 
-        transcript_text = ""
+        transcript_html = ""
         if meetings:
             meeting_id = meetings[0]["id"]
             transcripts_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
@@ -126,15 +156,24 @@ def meetings():
 
                 if content_resp.status_code == 200:
                     vtt_text = content_resp.text
-                    transcript_text = parse_vtt_with_speakers(vtt_text)
-                else:
-                    transcript_text = "<i>Transcript content not available.</i>"
-            else:
-                transcript_text = "<i>No transcript found.</i>"
-        else:
-            transcript_text = "<i>You're not the organizer. Cannot access transcript.</i>"
 
-        output += f"<li>{subject} - Join Link: {join_url}<br>{transcript_text}</li>"
+                    try:
+                        # 🤖 Use AI to summarize transcript
+                        ai_summary = analyze_meeting_transcript(vtt_text)
+                        transcript_html = (
+                            f"<details><summary>🤖 AI Summary</summary><pre>{ai_summary}</pre></details>"
+                            + parse_vtt_with_speakers(vtt_text)
+                        )
+                    except Exception as e:
+                        transcript_html = f"<i>AI Summary failed: {str(e)}</i>"
+                else:
+                    transcript_html = "<i>Transcript content not available.</i>"
+            else:
+                transcript_html = "<i>No transcript found.</i>"
+        else:
+            transcript_html = "<i>You're not the organizer. Cannot access transcript.</i>"
+
+        output += f"<li><strong>{subject}</strong><br>Join Link: <a href='{join_url}' target='_blank'>{join_url}</a><br>{transcript_html}</li>"
 
     output += "</ul>"
     return output
