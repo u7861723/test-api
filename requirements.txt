@@ -1,0 +1,4 @@
+Flask==2.2.5
+requests
+flask-session
+
