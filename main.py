@@ -1,107 +1,110 @@
+from flask import Flask, redirect, request, session
+from flask_session import Session
 import requests
+import uuid
 import os
+import urllib.parse
+from datetime import datetime, timedelta
 
-# Your Azure AD credentials
+app = Flask(__name__)
+app.secret_key = os.urandom(24)
+
+# 使用服务器端 Session 存储，防止 Cookie 丢失
+app.config["SESSION_TYPE"] = "filesystem"
+Session(app)
+
 CLIENT_ID = "2d0df75c-6bc1-446f-bcf0-a22aea96c9b3"
 CLIENT_SECRET = "U7p8Q~vHMHQyI8ZpZu5-R7CaaPV_pXOSwvXgTakG"
 TENANT_ID = "22438506-028b-45c7-9bd3-8badf683d7e3"
-USER_ID = "70154120-c7da-45f8-9f7b-fb660e8694a3"
-JOIN_WEB_URL = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_YmIyMWNkYmQtODVlMS00YmU5LWE1OWItMTgwN2RlM2VmMzYy%40thread.v2/0?context=%7b%22Tid%22%3a%2222438506-028b-45c7-9bd3-8badf683d7e3%22%2c%22Oid%22%3a%2270154120-c7da-45f8-9f7b-fb660e8694a3%22%7d"# Function to get Access Token
-def get_access_token():
-    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+REDIRECT_URI = "http://localhost:5000/callback"
+AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+SCOPE = "openid profile email OnlineMeetings.Read OnlineMeetingTranscript.Read.All Calendars.Read User.Read"
+
+@app.route("/")
+def home():
+    return '<a href="/login">🔐 Click here to log in with Microsoft</a>'
+
+@app.route("/login")
+def login():
+    state = str(uuid.uuid4())
+    session["oauth_state"] = state
+    auth_url = (
+        f"{AUTHORITY}/oauth2/v2.0/authorize?"
+        f"client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}"
+        f"&response_mode=query&scope={SCOPE}&state={state}"
+    )
+    return redirect(auth_url)
+
+@app.route("/callback")
+def callback():
+    if request.args.get("state") != session.get("oauth_state"):
+        return "❌ State mismatch", 400
+
+    code = request.args.get("code")
+    token_url = f"{AUTHORITY}/oauth2/v2.0/token"
     data = {
-        "grant_type": "client_credentials",
+        "grant_type": "authorization_code",
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
-        "scope": "https://graph.microsoft.com/.default"
+        "code": code,
+        "redirect_uri": REDIRECT_URI,
+        "scope": SCOPE,
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    token_response = requests.post(token_url, data=data, headers=headers).json()
 
-    response = requests.post(url, data=data, headers=headers)
-    if response.status_code == 200:
-        print("✅ Access Token successfully retrieved!")
-        return response.json()["access_token"]
+    if "access_token" in token_response:
+        session["access_token"] = token_response["access_token"]
+        return redirect("/meetings")
     else:
-        print("❌ Failed to retrieve Access Token:", response.json())
-        return None
+        return f"❌ Token error: {token_response}", 400
 
-# Function to get Meeting ID using the join URL
-def get_meeting_by_join_url(join_url):
-    access_token = get_access_token()
-    if not access_token:
-        return None
+@app.route("/meetings")
+def meetings():
+    token = session.get("access_token")
+    if not token:
+        return redirect("/login")
 
-    url = f"https://graph.microsoft.com/v1.0/users/{USER_ID}/onlineMeetings?$filter=JoinWebUrl eq '{join_url}'"
-    headers = {"Authorization": f"Bearer {access_token}"}
-    response = requests.get(url, headers=headers)
+    headers = {"Authorization": f"Bearer {token}"}
 
-    if response.status_code == 200:
-        meetings = response.json().get("value", [])
+    # 获取近 30 天会议事件
+    start = datetime.utcnow() - timedelta(days=30)
+    end = datetime.utcnow()
+    url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
+    events_resp = requests.get(url, headers=headers).json()
+    output = "<h2>📅 Past 30 Days Events</h2><ul>"
+
+    for event in events_resp.get("value", []):
+        subject = event.get("subject", "None")
+        join_url = event.get("onlineMeeting") and event["onlineMeeting"].get("joinUrl")
+        if not join_url:
+            continue
+
+        encoded_url = urllib.parse.quote(join_url, safe="")
+        meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
+        meeting_resp = requests.get(meeting_lookup_url, headers=headers).json()
+        meetings = meeting_resp.get("value", [])
+
+        transcript_text = ""
         if meetings:
             meeting_id = meetings[0]["id"]
-            print(f"✅ Meeting ID retrieved successfully: {meeting_id}")
-            return meeting_id
-        else:
-            print("❌ No meeting found.")
-            return None
-    else:
-        print("❌ Failed to retrieve meeting:", response.json())
-        return None
+            transcripts_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
+            transcripts_resp = requests.get(transcripts_url, headers=headers).json()
+            transcript_list = transcripts_resp.get("value", [])
 
-# Function to get all transcription IDs for the meeting
-def get_meeting_transcriptions(meeting_id):
-    access_token = get_access_token()
-    if not access_token:
-        return None
+            if transcript_list:
+                transcript_id = transcript_list[0]["id"]
+                content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
+                content_headers = headers.copy()
+                content_headers["Accept"] = "text/vtt"
+                content_resp = requests.get(content_url, headers=content_headers)
+                if content_resp.status_code == 200:
+                    transcript_text = f"<details><summary>📝 Transcript</summary><pre>{content_resp.text}</pre></details>"
 
-    url = f"https://graph.microsoft.com/beta/users/{USER_ID}/onlineMeetings/{meeting_id}/transcripts"
-    headers = {"Authorization": f"Bearer {access_token}"}
-    response = requests.get(url, headers=headers)
+        output += f"<li>{subject} - Join Link: {join_url} {transcript_text}</li>"
 
-    if response.status_code == 200:
-        transcripts = response.json().get("value", [])
-        if transcripts:
-            transcript_ids = [t["id"] for t in transcripts]
-            print(f"✅ Retrieved {len(transcript_ids)} transcription IDs: {transcript_ids}")
-            return transcript_ids
-        else:
-            print("❌ No transcription found.")
-            return []
-    else:
-        print("❌ Failed to retrieve meeting transcriptions:", response.json())
-        return []
+    output += "</ul>"
+    return output
 
-# Function to download each transcription separately
-def download_transcriptions(meeting_id, transcript_ids):
-    access_token = get_access_token()
-    if not access_token:
-        return None
-
-    os.makedirs("transcriptions", exist_ok=True)  # Create a folder to store transcriptions
-
-    for i, transcript_id in enumerate(transcript_ids):
-        url = f"https://graph.microsoft.com/beta/users/{USER_ID}/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "text/vtt",  # Change format if needed (try "text/plain")
-        }
-
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            transcript_text = response.text
-            file_name = f"transcriptions/meeting_transcription_part_{i+1}.vtt"
-            with open(file_name, "w", encoding="utf-8") as file:
-                file.write(transcript_text)
-            print(f"✅ Transcription {i+1} downloaded successfully: {file_name}")
-        else:
-            print(f"❌ Failed to download transcription {i+1}:", response.json())
-
-# **Main execution flow**
 if __name__ == "__main__":
-    meeting_id = get_meeting_by_join_url(JOIN_WEB_URL)
-
-    if meeting_id:
-        transcript_ids = get_meeting_transcriptions(meeting_id)
-
-        if transcript_ids:
-            download_transcriptions(meeting_id, transcript_ids)
+    app.run(port=5000, debug=True, use_reloader=False)
