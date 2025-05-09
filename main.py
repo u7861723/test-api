@@ -7,13 +7,22 @@ import urllib.parse
 from datetime import datetime, timedelta
 import re
 import openai
+import logging
+import time
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ✅ DeepSeek client
 openai.api_key = "sk-95aca95db16343f4a019f3b3b8c8c76f"
 openai.api_base = "https://api.deepseek.com/v1"
 
-def analyze_meeting_transcript(transcript_text):
-    prompt = f"""
+def analyze_meeting_transcript(transcript_text, max_retries=3):
+    """Analyze meeting transcript with retry mechanism"""
+    for attempt in range(max_retries):
+        try:
+            prompt = f"""
 You are a smart meeting assistant.
 Given the transcript below, please:
 1. Give the date and title of the meeting.
@@ -27,39 +36,48 @@ Transcript:
 {transcript_text}
 \"\"\"
 """
-    response = openai.ChatCompletion.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": "You are a helpful AI meeting assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        stream=False
-    )
-    return response.choices[0].message['content']
-
+            response = openai.ChatCompletion.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": "You are a helpful AI meeting assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                stream=False
+            )
+            return response.choices[0].message['content']
+        except Exception as e:
+            logger.error(f"AI analysis attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)  # Exponential backoff
+            else:
+                raise
 
 def parse_vtt_with_speakers(vtt_text):
-    lines = vtt_text.strip().splitlines()
-    transcript_html = "<details><summary>🗣️ Full Transcript</summary><ul>"
-    cue = []
-    for line in lines:
-        if "-->" in line:
-            cue = []
-        elif line.strip() == "":
-            if cue:
-                for entry in cue:
-                    match = re.match(r"<v\s+([^>]+)>(.*)", entry)
-                    if match:
-                        speaker, text = match.groups()
-                        transcript_html += f"<li><strong>{speaker}:</strong> {text.strip()}</li>"
-                    else:
-                        transcript_html += f"<li>{entry.strip()}</li>"
-            cue = []
-        else:
-            cue.append(line)
-    transcript_html += "</ul></details>"
-    return transcript_html
-
+    """Parse VTT text with error handling"""
+    try:
+        lines = vtt_text.strip().splitlines()
+        transcript_html = "<details><summary>🗣️ Full Transcript</summary><ul>"
+        cue = []
+        for line in lines:
+            if "-->" in line:
+                cue = []
+            elif line.strip() == "":
+                if cue:
+                    for entry in cue:
+                        match = re.match(r"<v\s+([^>]+)>(.*)", entry)
+                        if match:
+                            speaker, text = match.groups()
+                            transcript_html += f"<li><strong>{speaker}:</strong> {text.strip()}</li>"
+                        else:
+                            transcript_html += f"<li>{entry.strip()}</li>"
+                cue = []
+            else:
+                cue.append(line)
+        transcript_html += "</ul></details>"
+        return transcript_html
+    except Exception as e:
+        logger.error(f"Error parsing VTT: {str(e)}")
+        return "<div class='text-danger'>Error parsing transcript</div>"
 
 # ✅ Flask App Setup
 app = Flask(__name__)
@@ -124,57 +142,89 @@ def meetings():
     headers = {"Authorization": f"Bearer {token}"}
     events_list = []
 
-    start = datetime.utcnow() - timedelta(days=30)
-    end = datetime.utcnow()
-    url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
-    events_resp = requests.get(url, headers=headers).json()
-
-    for event in events_resp.get("value", []):
-        event_data = {
-            'subject': event.get("subject", "Untitled Meeting"),
-            'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
-            'join_url': event.get("onlineMeeting", {}).get("joinUrl"),
-            'transcript_html': None
-        }
+    try:
+        start = datetime.utcnow() - timedelta(days=30)
+        end = datetime.utcnow()
+        url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
         
-        if event_data['join_url']:
-            encoded_url = urllib.parse.quote(event_data['join_url'], safe="")
-            meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
-            meeting_resp = requests.get(meeting_lookup_url, headers=headers).json()
-            meetings = meeting_resp.get("value", [])
+        # Add timeout and retry for calendar request
+        for attempt in range(3):
+            try:
+                events_resp = requests.get(url, headers=headers, timeout=10).json()
+                break
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Calendar request attempt {attempt + 1} failed: {str(e)}")
+                if attempt == 2:
+                    raise
+                time.sleep(1)
 
-            if meetings:
-                meeting_id = meetings[0]["id"]
-                transcripts_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
-                transcripts_resp = requests.get(transcripts_url, headers=headers).json()
-                transcript_list = transcripts_resp.get("value", [])
+        for event in events_resp.get("value", []):
+            try:
+                event_data = {
+                    'subject': event.get("subject", "Untitled Meeting"),
+                    'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
+                    'join_url': event.get("onlineMeeting", {}).get("joinUrl"),
+                    'transcript_html': None
+                }
+                
+                if event_data['join_url']:
+                    encoded_url = urllib.parse.quote(event_data['join_url'], safe="")
+                    meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
+                    
+                    # Add timeout for meeting lookup
+                    meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10).json()
+                    meetings = meeting_resp.get("value", [])
 
-                if transcript_list:
-                    transcript_id = transcript_list[0]["id"]
-                    content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
-                    content_headers = headers.copy()
-                    content_headers["Accept"] = "text/vtt"
-                    content_resp = requests.get(content_url, headers=content_headers)
+                    if meetings:
+                        meeting_id = meetings[0]["id"]
+                        transcripts_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
+                        transcripts_resp = requests.get(transcripts_url, headers=headers, timeout=10).json()
+                        transcript_list = transcripts_resp.get("value", [])
 
-                    if content_resp.status_code == 200:
-                        vtt_text = content_resp.text
-                        try:
-                            ai_summary = analyze_meeting_transcript(vtt_text)
-                            event_data['transcript_html'] = f"""
-                            <details>
-                                <summary>🤖 AI Meeting Summary</summary>
-                                <div class="p-3 bg-light rounded">
-                                    {ai_summary}
-                                </div>
-                            </details>
-                            {parse_vtt_with_speakers(vtt_text)}
-                            """
-                        except Exception as e:
-                            event_data['transcript_html'] = f"<div class='text-danger'><i class='fas fa-exclamation-circle me-1'></i>AI Analysis Failed: {str(e)}</div>"
+                        if transcript_list:
+                            transcript_id = transcript_list[0]["id"]
+                            content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
+                            content_headers = headers.copy()
+                            content_headers["Accept"] = "text/vtt"
+                            
+                            # Add timeout for transcript content
+                            content_resp = requests.get(content_url, headers=content_headers, timeout=10)
 
-        events_list.append(event_data)
+                            if content_resp.status_code == 200:
+                                vtt_text = content_resp.text
+                                try:
+                                    ai_summary = analyze_meeting_transcript(vtt_text)
+                                    event_data['transcript_html'] = f"""
+                                    <details>
+                                        <summary>🤖 AI Meeting Summary</summary>
+                                        <div class="p-3 bg-light rounded">
+                                            {ai_summary}
+                                        </div>
+                                    </details>
+                                    {parse_vtt_with_speakers(vtt_text)}
+                                    """
+                                except Exception as e:
+                                    logger.error(f"AI analysis failed for meeting {event_data['subject']}: {str(e)}")
+                                    event_data['transcript_html'] = f"<div class='text-danger'><i class='fas fa-exclamation-circle me-1'></i>AI Analysis Failed: {str(e)}</div>"
+                            else:
+                                logger.error(f"Failed to get transcript content for meeting {event_data['subject']}: {content_resp.status_code}")
+                                event_data['transcript_html'] = "<div class='text-danger'><i class='fas fa-exclamation-circle me-1'></i>Failed to get transcript content</div>"
+                        else:
+                            logger.info(f"No transcript found for meeting {event_data['subject']}")
+                            event_data['transcript_html'] = "<div class='text-muted'><i class='fas fa-info-circle me-1'></i>No transcript available</div>"
+                    else:
+                        logger.info(f"No meeting details found for {event_data['subject']}")
+                        event_data['transcript_html'] = "<div class='text-muted'><i class='fas fa-info-circle me-1'></i>Meeting details not available</div>"
 
-    return render_template('meetings.html', events=events_list)
+                events_list.append(event_data)
+            except Exception as e:
+                logger.error(f"Error processing event {event.get('subject', 'Unknown')}: {str(e)}")
+                continue
+
+        return render_template('meetings.html', events=events_list)
+    except Exception as e:
+        logger.error(f"Error in meetings route: {str(e)}")
+        return render_template('meetings.html', events=[], error="Failed to load meetings. Please try again later.")
 
 @app.route("/logout")
 def logout():
