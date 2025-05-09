@@ -79,6 +79,30 @@ def parse_vtt_with_speakers(vtt_text):
         logger.error(f"Error parsing VTT: {str(e)}")
         return "<div class='text-danger'>Error parsing transcript</div>"
 
+def get_transcript_content(content_url, headers, meeting_subject):
+    """Get transcript content with better error handling"""
+    try:
+        content_resp = requests.get(content_url, headers=headers, timeout=10)
+        
+        if content_resp.status_code == 200:
+            return content_resp.text
+        elif content_resp.status_code == 402:
+            logger.error(f"Payment required for transcript access - Meeting: {meeting_subject}")
+            return None, "This meeting transcript requires a paid subscription to access."
+        elif content_resp.status_code == 403:
+            logger.error(f"Permission denied for transcript - Meeting: {meeting_subject}")
+            return None, "You don't have permission to access this meeting transcript."
+        elif content_resp.status_code == 404:
+            logger.error(f"Transcript not found - Meeting: {meeting_subject}")
+            return None, "Meeting transcript not found."
+        else:
+            logger.error(f"Failed to get transcript (Status {content_resp.status_code}) - Meeting: {meeting_subject}")
+            return None, f"Failed to get transcript (Error {content_resp.status_code})"
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error for transcript - Meeting: {meeting_subject} - Error: {str(e)}")
+        return None, "Network error while fetching transcript"
+
 # ✅ Flask App Setup
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -187,11 +211,9 @@ def meetings():
                             content_headers = headers.copy()
                             content_headers["Accept"] = "text/vtt"
                             
-                            # Add timeout for transcript content
-                            content_resp = requests.get(content_url, headers=content_headers, timeout=10)
-
-                            if content_resp.status_code == 200:
-                                vtt_text = content_resp.text
+                            vtt_text, error_message = get_transcript_content(content_url, content_headers, event_data['subject'])
+                            
+                            if vtt_text:
                                 try:
                                     ai_summary = analyze_meeting_transcript(vtt_text)
                                     event_data['transcript_html'] = f"""
@@ -207,8 +229,7 @@ def meetings():
                                     logger.error(f"AI analysis failed for meeting {event_data['subject']}: {str(e)}")
                                     event_data['transcript_html'] = f"<div class='text-danger'><i class='fas fa-exclamation-circle me-1'></i>AI Analysis Failed: {str(e)}</div>"
                             else:
-                                logger.error(f"Failed to get transcript content for meeting {event_data['subject']}: {content_resp.status_code}")
-                                event_data['transcript_html'] = "<div class='text-danger'><i class='fas fa-exclamation-circle me-1'></i>Failed to get transcript content</div>"
+                                event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error_message}</div>"
                         else:
                             logger.info(f"No transcript found for meeting {event_data['subject']}")
                             event_data['transcript_html'] = "<div class='text-muted'><i class='fas fa-info-circle me-1'></i>No transcript available</div>"
