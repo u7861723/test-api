@@ -1,4 +1,4 @@
-from flask import Flask, redirect, request, session
+from flask import Flask, redirect, request, session, render_template
 from flask_session import Session
 import requests
 import uuid
@@ -6,13 +6,11 @@ import os
 import urllib.parse
 from datetime import datetime, timedelta
 import re
-from openai import OpenAI
+import openai
 
 # ✅ DeepSeek client
-client = OpenAI(
-    api_key="sk-95aca95db16343f4a019f3b3b8c8c76f",  # Your key
-    base_url="https://api.deepseek.com"
-)
+openai.api_key = "sk-95aca95db16343f4a019f3b3b8c8c76f"
+openai.api_base = "https://api.deepseek.com/v1"
 
 def analyze_meeting_transcript(transcript_text):
     prompt = f"""
@@ -29,7 +27,7 @@ Transcript:
 {transcript_text}
 \"\"\"
 """
-    response = client.chat.completions.create(
+    response = openai.ChatCompletion.create(
         model="deepseek-chat",
         messages=[
             {"role": "system", "content": "You are a helpful AI meeting assistant."},
@@ -37,7 +35,7 @@ Transcript:
         ],
         stream=False
     )
-    return response.choices[0].message.content
+    return response.choices[0].message['content']
 
 
 def parse_vtt_with_speakers(vtt_text):
@@ -78,7 +76,9 @@ SCOPE = "openid profile email OnlineMeetings.Read OnlineMeetingTranscript.Read.A
 
 @app.route("/")
 def home():
-    return '<a href="/login">🔐 Click here to log in with Microsoft</a>'
+    if 'access_token' in session:
+        return redirect('/meetings')
+    return render_template('login.html')
 
 @app.route("/login")
 def login():
@@ -119,10 +119,10 @@ def callback():
 def meetings():
     token = session.get("access_token")
     if not token:
-        return redirect("/login")
+        return redirect("/")
 
     headers = {"Authorization": f"Bearer {token}"}
-    output = "<h2>📅 Past 30 Days Events</h2><ul>"
+    events_list = []
 
     start = datetime.utcnow() - timedelta(days=30)
     end = datetime.utcnow()
@@ -130,54 +130,56 @@ def meetings():
     events_resp = requests.get(url, headers=headers).json()
 
     for event in events_resp.get("value", []):
-        subject = event.get("subject", "None")
-        join_url = event.get("onlineMeeting") and event["onlineMeeting"].get("joinUrl")
-        if not join_url:
-            continue
+        event_data = {
+            'subject': event.get("subject", "Untitled Meeting"),
+            'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
+            'join_url': event.get("onlineMeeting", {}).get("joinUrl"),
+            'transcript_html': None
+        }
+        
+        if event_data['join_url']:
+            encoded_url = urllib.parse.quote(event_data['join_url'], safe="")
+            meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
+            meeting_resp = requests.get(meeting_lookup_url, headers=headers).json()
+            meetings = meeting_resp.get("value", [])
 
-        encoded_url = urllib.parse.quote(join_url, safe="")
-        meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
-        meeting_resp = requests.get(meeting_lookup_url, headers=headers).json()
-        meetings = meeting_resp.get("value", [])
+            if meetings:
+                meeting_id = meetings[0]["id"]
+                transcripts_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
+                transcripts_resp = requests.get(transcripts_url, headers=headers).json()
+                transcript_list = transcripts_resp.get("value", [])
 
-        transcript_html = ""
-        if meetings:
-            meeting_id = meetings[0]["id"]
-            transcripts_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
-            transcripts_resp = requests.get(transcripts_url, headers=headers).json()
-            transcript_list = transcripts_resp.get("value", [])
+                if transcript_list:
+                    transcript_id = transcript_list[0]["id"]
+                    content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
+                    content_headers = headers.copy()
+                    content_headers["Accept"] = "text/vtt"
+                    content_resp = requests.get(content_url, headers=content_headers)
 
-            if transcript_list:
-                transcript_id = transcript_list[0]["id"]
-                content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
-                content_headers = headers.copy()
-                content_headers["Accept"] = "text/vtt"
-                content_resp = requests.get(content_url, headers=content_headers)
+                    if content_resp.status_code == 200:
+                        vtt_text = content_resp.text
+                        try:
+                            ai_summary = analyze_meeting_transcript(vtt_text)
+                            event_data['transcript_html'] = f"""
+                            <details>
+                                <summary>🤖 AI Meeting Summary</summary>
+                                <div class="p-3 bg-light rounded">
+                                    {ai_summary}
+                                </div>
+                            </details>
+                            {parse_vtt_with_speakers(vtt_text)}
+                            """
+                        except Exception as e:
+                            event_data['transcript_html'] = f"<div class='text-danger'><i class='fas fa-exclamation-circle me-1'></i>AI Analysis Failed: {str(e)}</div>"
 
-                if content_resp.status_code == 200:
-                    vtt_text = content_resp.text
+        events_list.append(event_data)
 
-                    try:
-                        # 🤖 Use AI to summarize transcript
-                        ai_summary = analyze_meeting_transcript(vtt_text)
-                        transcript_html = (
-                            f"<details><summary>🤖 AI Summary</summary><pre>{ai_summary}</pre></details>"
-                            + parse_vtt_with_speakers(vtt_text)
-                        )
-                    except Exception as e:
-                        transcript_html = f"<i>AI Summary failed: {str(e)}</i>"
-                else:
-                    transcript_html = "<i>Transcript content not available.</i>"
-            else:
-                transcript_html = "<i>No transcript found.</i>"
-        else:
-            transcript_html = "<i>You're not the organizer. Cannot access transcript.</i>"
+    return render_template('meetings.html', events=events_list)
 
-        output += f"<li><strong>{subject}</strong><br>Join Link: <a href='{join_url}' target='_blank'>{join_url}</a><br>{transcript_html}</li>"
-
-    output += "</ul>"
-    return output
-
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
