@@ -11,10 +11,25 @@
 </div>
 
 {% if error %}
-<div class="alert alert-danger alert-dismissible fade show" role="alert">
-    <i class="fas fa-exclamation-circle me-2"></i>{{ error }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-</div>
+    {% if 'premium subscription' in error|lower %}
+        <div class="alert alert-info">
+            <h4 class="alert-heading"><i class="fas fa-crown me-2"></i>Premium Feature Required</h4>
+            <p>This meeting transcript requires a premium subscription. To access meeting transcripts, you need one of the following subscriptions:</p>
+            <ul>
+                <li>Microsoft 365 E5</li>
+                <li>Microsoft 365 A5</li>
+                <li>Teams Premium</li>
+                <li>Business Premium</li>
+            </ul>
+            <hr>
+            <p class="mb-0">Please contact your IT administrator to upgrade your subscription.</p>
+        </div>
+    {% else %}
+        <div class="alert alert-warning">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            {{ error }}
+        </div>
+    {% endif %}
 {% endif %}
 
 <div class="row g-4">
