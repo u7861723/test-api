@@ -199,8 +199,8 @@ def get_transcript_content_by_id(meeting_id, transcript_id, headers):
             'type': 'error',
             'message': "Network error while fetching transcript",
             'html': """
-            <div class=\"text-warning\">
-                <i class=\"fas fa-exclamation-triangle me-1\"></i>
+            <div class="text-warning">
+                <i class="fas fa-exclamation-triangle me-1"></i>
                 Network error while fetching transcript
             </div>
             """
