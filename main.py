@@ -9,6 +9,7 @@ import re
 import openai
 import logging
 import time
+import markdown
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -396,13 +397,14 @@ def get_latest_meeting_with_transcript(headers):
                     try:
                         logger.info("Successfully got transcript content, analyzing...")
                         ai_summary = analyze_meeting_transcript(vtt_text)
+                        ai_summary_html = markdown.markdown(ai_summary, extensions=['extra', 'nl2br'])
                         return {
                             'subject': event.get("subject", "Untitled Meeting"),
                             'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
                             'join_url': join_url,
                             'transcript_html': f"""
                             <div class="meeting-summary">
-                                {ai_summary}
+                                {ai_summary_html}
                             </div>
                             """,
                             'status': 'success'
