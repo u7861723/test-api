@@ -427,9 +427,9 @@ app.secret_key = os.urandom(24)
 app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 
-CLIENT_ID = os.environ.get("CLIENT_ID", "")
-CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "")
-TENANT_ID = os.environ.get("TENANT_ID", "")
+CLIENT_ID = os.environ.get("CLIENT_ID", "080b1826-6d96-4ab4-b614-ccbd4a0114d7")
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "rp_8Q~~kQGivK_C5PotHmck5WX8O3tXqkSjc9apR")
+TENANT_ID = os.environ.get("TENANT_ID", "22438506-028b-45c7-9bd3-8badf683d7e3")
 REDIRECT_URI = "https://test-api-aht9.onrender.com/callback"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPE = "openid profile email OnlineMeetings.Read OnlineMeetingTranscript.Read.All Calendars.Read User.Read"
