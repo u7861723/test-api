@@ -33,7 +33,7 @@
                     {{ event.start.strftime('%Y-%m-%d %H:%M') }}
                 </p>
                 {% if event.transcript_html %}
-                    <div class="mb-3">
+                    <div class="mb-3 meeting-content">
                         {{ event.transcript_html | safe }}
                     </div>
                 {% else %}
@@ -59,4 +59,40 @@
     <p class="text-muted">No meeting records found in the last 30 days</p>
 </div>
 {% endif %}
+
+<style>
+.meeting-content {
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+.meeting-content h1 {
+    font-size: 1.5rem;
+    margin-bottom: 1rem;
+    color: #2c3e50;
+}
+
+.meeting-content h2 {
+    font-size: 1.2rem;
+    margin: 1rem 0 0.5rem;
+    color: #34495e;
+}
+
+.meeting-content ul, .meeting-content ol {
+    padding-left: 1.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.meeting-content li {
+    margin-bottom: 0.25rem;
+}
+
+.meeting-content .text-warning {
+    font-size: 0.85rem;
+}
+
+.meeting-content .text-muted {
+    font-size: 0.8rem;
+}
+</style>
 {% endblock %} 

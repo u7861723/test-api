@@ -23,13 +23,33 @@ def analyze_meeting_transcript(transcript_text, max_retries=3):
     for attempt in range(max_retries):
         try:
             prompt = f"""
-You are a smart meeting assistant.
-Given the transcript below, please:
-1. Give the date and title of the meeting.
-2. Provide a concise **meeting summary**.
-3. List **meeting minutes** with time-order key points.
-4. List what we have done and what we need to do in the future.
-5. Identify any **next steps or action items**, action items should be in detailed description and assign responsible people if mentioned.
+You are a smart meeting assistant. Please analyze the meeting transcript and provide a well-formatted summary.
+Please structure your response in the following format:
+
+# Meeting Summary
+
+## Meeting Details
+- Date: [Meeting Date]
+- Title: [Meeting Title]
+
+## Executive Summary
+[Provide a concise 2-3 sentence summary of the meeting]
+
+## Key Points
+1. [First key point]
+2. [Second key point]
+3. [Third key point]
+...
+
+## Action Items
+- [ ] [Action item 1] - [Responsible person]
+- [ ] [Action item 2] - [Responsible person]
+...
+
+## Next Steps
+1. [Next step 1]
+2. [Next step 2]
+...
 
 Transcript:
 \"\"\"
@@ -39,7 +59,7 @@ Transcript:
             response = openai.ChatCompletion.create(
                 model="deepseek-chat",
                 messages=[
-                    {"role": "system", "content": "You are a helpful AI meeting assistant."},
+                    {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
                     {"role": "user", "content": prompt}
                 ],
                 stream=False
@@ -83,7 +103,10 @@ def get_meeting_transcriptions(meeting_id, headers):
     """Get all transcription IDs for a meeting"""
     try:
         url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
+        logger.info(f"Requesting transcript IDs from: {url}")
         response = requests.get(url, headers=headers, timeout=10)
+        
+        logger.info(f"Transcript IDs response status: {response.status_code}")
         
         if response.status_code == 200:
             transcripts = response.json().get("value", [])
@@ -114,10 +137,20 @@ def get_transcript_content_by_id(meeting_id, transcript_id, headers):
         content_headers = headers.copy()
         content_headers["Accept"] = "text/vtt"
         
+        logger.info(f"Requesting transcript content from: {content_url}")
         content_resp = requests.get(content_url, headers=content_headers, timeout=10)
         
+        logger.info(f"Transcript content response status: {content_resp.status_code}")
+        
         if content_resp.status_code == 200:
+            logger.info("Successfully retrieved transcript content")
             return content_resp.text, None
+        elif content_resp.status_code == 402:
+            logger.warning("Premium subscription required for this transcript")
+            return None, {
+                'type': 'premium_required',
+                'message': 'This meeting transcript requires a premium subscription.'
+            }
         else:
             error_message = f"Failed to get transcript (Error {content_resp.status_code})"
             try:
@@ -125,11 +158,17 @@ def get_transcript_content_by_id(meeting_id, transcript_id, headers):
                 logger.error(f"Error details: {error_details}")
             except:
                 logger.error(error_message)
-            return None, error_message
+            return None, {
+                'type': 'error',
+                'message': error_message
+            }
             
     except requests.exceptions.RequestException as e:
         logger.error(f"Request error for transcript: {str(e)}")
-        return None, "Network error while fetching transcript"
+        return None, {
+            'type': 'error',
+            'message': "Network error while fetching transcript"
+        }
 
 def generate_admin_consent_url():
     """Generate admin consent URL"""
@@ -321,6 +360,7 @@ def meetings():
                     encoded_url = urllib.parse.quote(event_data['join_url'], safe="")
                     meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
                     
+                    logger.info(f"Looking up meeting with URL: {meeting_lookup_url}")
                     # Add timeout for meeting lookup
                     meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10).json()
                     meetings = meeting_resp.get("value", [])
@@ -333,6 +373,7 @@ def meetings():
                         transcript_ids, error = get_meeting_transcriptions(meeting_id, headers)
                         
                         if error:
+                            logger.warning(f"Error getting transcriptions for meeting {event_data['subject']}: {error}")
                             event_data['status'] = 'warning'
                             event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error}</div>"
                         elif transcript_ids:
@@ -350,13 +391,9 @@ def meetings():
                                 try:
                                     ai_summary = analyze_meeting_transcript(vtt_text)
                                     event_data['transcript_html'] = f"""
-                                    <details>
-                                        <summary>🤖 AI Meeting Summary</summary>
-                                        <div class="p-3 bg-light rounded">
-                                            {ai_summary}
-                                        </div>
-                                    </details>
-                                    {parse_vtt_with_speakers(vtt_text)}
+                                    <div class="meeting-summary">
+                                        {ai_summary}
+                                    </div>
                                     """
                                     logger.info(f"Successfully processed transcript for {event_data['subject']}")
                                 except Exception as e:
@@ -365,11 +402,23 @@ def meetings():
                                     event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>AI Analysis Failed: {str(e)}</div>"
                             else:
                                 event_data['status'] = 'warning'
-                                event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error_message}</div>"
+                                if error_message.get('type') == 'premium_required':
+                                    event_data['transcript_html'] = f"""
+                                    <div class='text-warning'>
+                                        <i class='fas fa-crown me-1'></i>
+                                        {error_message['message']}
+                                        <br>
+                                        <small class='text-muted'>This meeting requires a premium subscription to access the transcript.</small>
+                                    </div>
+                                    """
+                                else:
+                                    event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error_message['message']}</div>"
                         else:
+                            logger.info(f"No transcript IDs found for meeting {event_data['subject']}")
                             event_data['status'] = 'info'
                             event_data['transcript_html'] = "<div class='text-muted'><i class='fas fa-info-circle me-1'></i>No transcript available</div>"
                     else:
+                        logger.info(f"No meeting details found for {event_data['subject']}")
                         event_data['status'] = 'info'
                         event_data['transcript_html'] = "<div class='text-muted'><i class='fas fa-info-circle me-1'></i>Meeting details not available</div>"
 
