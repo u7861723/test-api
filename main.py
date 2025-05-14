@@ -110,69 +110,78 @@ def get_user_id(headers):
 
 def get_meeting_transcriptions(meeting_id, headers):
     """Get all transcription IDs for a meeting using /users/{user_id}/onlineMeetings/ API"""
+    logger.info(f"[get_meeting_transcriptions] Start for meeting_id: {meeting_id}")
     user_id, err = get_user_id(headers)
+    logger.info(f"[get_meeting_transcriptions] user_id: {user_id}, err: {err}")
     if err:
-        logger.error(err)
+        logger.error(f"[get_meeting_transcriptions] Error getting user_id: {err}")
         return [], err
     try:
         url = f"https://graph.microsoft.com/beta/users/{user_id}/onlineMeetings/{meeting_id}/transcripts"
-        logger.info(f"Requesting transcript IDs from: {url}")
+        logger.info(f"[get_meeting_transcriptions] Requesting transcript IDs from: {url}")
+        logger.info("[get_meeting_transcriptions] Before sending request for transcripts")
         response = requests.get(url, headers=headers, timeout=10)
-        logger.info(f"Transcript IDs response status: {response.status_code}")
+        logger.info("[get_meeting_transcriptions] After sending request for transcripts")
+        logger.info(f"[get_meeting_transcriptions] Transcript IDs response status: {response.status_code}")
         if response.status_code == 200:
             transcripts = response.json().get("value", [])
+            logger.info(f"[get_meeting_transcriptions] Response JSON: {response.json()}")
             if transcripts:
                 transcript_ids = [t["id"] for t in transcripts]
-                logger.info(f"✅ Retrieved {len(transcript_ids)} transcription IDs: {transcript_ids}")
+                logger.info(f"[get_meeting_transcriptions] ✅ Retrieved {len(transcript_ids)} transcription IDs: {transcript_ids}")
                 return transcript_ids, None
             else:
-                logger.info("❌ No transcription found.")
+                logger.info("[get_meeting_transcriptions] ❌ No transcription found.")
                 return [], "No transcriptions available for this meeting"
         else:
             error_msg = f"Failed to retrieve transcriptions (Error {response.status_code})"
             try:
                 error_details = response.json()
-                logger.error(f"❌ {error_msg}: {error_details}")
-            except:
-                logger.error(f"❌ {error_msg}")
+                logger.error(f"[get_meeting_transcriptions] ❌ {error_msg}: {error_details}")
+            except Exception as e:
+                logger.error(f"[get_meeting_transcriptions] ❌ {error_msg}, Exception: {str(e)}")
             return [], error_msg
     except Exception as e:
-        error_msg = f"Error getting transcriptions: {str(e)}"
+        error_msg = f"[get_meeting_transcriptions] Error getting transcriptions: {str(e)}"
         logger.error(error_msg)
         return [], error_msg
 
 def get_transcript_content_by_id(meeting_id, transcript_id, headers):
     """Get transcript content using /users/{user_id}/onlineMeetings/ API"""
+    logger.info(f"[get_transcript_content_by_id] Start for meeting_id: {meeting_id}, transcript_id: {transcript_id}")
     user_id, err = get_user_id(headers)
+    logger.info(f"[get_transcript_content_by_id] user_id: {user_id}, err: {err}")
     if err:
-        logger.error(err)
+        logger.error(f"[get_transcript_content_by_id] Error getting user_id: {err}")
         return None, {'type': 'error', 'message': err}
     try:
         content_url = f"https://graph.microsoft.com/beta/users/{user_id}/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
         content_headers = headers.copy()
         content_headers["Accept"] = "text/vtt"
-        logger.info(f"Requesting transcript content from: {content_url}")
+        logger.info(f"[get_transcript_content_by_id] Requesting transcript content from: {content_url}")
+        logger.info("[get_transcript_content_by_id] Before sending request for transcript content")
         content_resp = requests.get(content_url, headers=content_headers, timeout=10)
-        logger.info(f"Transcript content response status: {content_resp.status_code}")
+        logger.info("[get_transcript_content_by_id] After sending request for transcript content")
+        logger.info(f"[get_transcript_content_by_id] Transcript content response status: {content_resp.status_code}")
         if content_resp.status_code == 200:
-            logger.info("Successfully retrieved transcript content")
+            logger.info("[get_transcript_content_by_id] Successfully retrieved transcript content")
             return content_resp.text, None
         elif content_resp.status_code == 402:
-            # 优化：显示微软API返回的详细错误信息
             try:
                 error_details = content_resp.json()
                 error_message = error_details.get('error', {}).get('message', 'This meeting transcript requires a premium subscription.')
-                logger.warning(f"PaymentRequired details: {error_details}")
-            except Exception:
+                logger.warning(f"[get_transcript_content_by_id] PaymentRequired details: {error_details}")
+            except Exception as e:
                 error_message = 'This meeting transcript requires a premium subscription.'
+                logger.warning(f"[get_transcript_content_by_id] PaymentRequired, Exception: {str(e)}")
             return None, {
                 'type': 'premium_required',
                 'message': error_message,
                 'html': f"""
-                <div class="premium-message">
-                    <i class="fas fa-crown me-1"></i>
+                <div class=\"premium-message\">
+                    <i class=\"fas fa-crown me-1\"></i>
                     <strong>Premium Feature</strong>
-                    <p class="mb-0">{error_message}</p>
+                    <p class=\"mb-0\">{error_message}</p>
                     <small>Please contact your administrator to upgrade your subscription.</small>
                 </div>
                 """
@@ -181,27 +190,27 @@ def get_transcript_content_by_id(meeting_id, transcript_id, headers):
             error_message = f"Failed to get transcript (Error {content_resp.status_code})"
             try:
                 error_details = content_resp.json()
-                logger.error(f"Error details: {error_details}")
-            except:
-                logger.error(error_message)
+                logger.error(f"[get_transcript_content_by_id] Error details: {error_details}")
+            except Exception as e:
+                logger.error(f"[get_transcript_content_by_id] {error_message}, Exception: {str(e)}")
             return None, {
                 'type': 'error',
                 'message': error_message,
                 'html': f"""
-                <div class="text-warning">
-                    <i class="fas fa-exclamation-triangle me-1"></i>
+                <div class=\"text-warning\">
+                    <i class=\"fas fa-exclamation-triangle me-1\"></i>
                     {error_message}
                 </div>
                 """
             }
     except requests.exceptions.RequestException as e:
-        logger.error(f"Request error for transcript: {str(e)}")
+        logger.error(f"[get_transcript_content_by_id] Request error for transcript: {str(e)}")
         return None, {
             'type': 'error',
             'message': "Network error while fetching transcript",
             'html': """
-            <div class="text-warning">
-                <i class="fas fa-exclamation-triangle me-1"></i>
+            <div class=\"text-warning\">
+                <i class=\"fas fa-exclamation-triangle me-1\"></i>
                 Network error while fetching transcript
             </div>
             """
