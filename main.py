@@ -289,6 +289,103 @@ def refresh_token(refresh_token):
         logger.error(f"Error refreshing token: {str(e)}")
         return False, str(e)
 
+def get_latest_meeting_with_transcript(headers):
+    """Get the latest meeting with transcript"""
+    try:
+        # Get meetings from the last 30 days
+        start = datetime.utcnow() - timedelta(days=30)
+        end = datetime.utcnow()
+        url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
+        
+        logger.info("Fetching calendar events...")
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 401:  # Token expired
+            logger.info("Token expired, attempting to refresh...")
+            refresh_token = session.get("refresh_token")
+            if refresh_token:
+                success, error = refresh_token(refresh_token)
+                if success:
+                    headers["Authorization"] = f"Bearer {session['access_token']}"
+                    response = requests.get(url, headers=headers, timeout=10)
+                else:
+                    return None, "Failed to refresh token"
+            else:
+                return None, "Token expired"
+        
+        events = response.json().get("value", [])
+        if not events:
+            return None, "No meetings found in the last 30 days"
+        
+        # Sort events by start time (newest first)
+        events.sort(key=lambda x: x.get("start", {}).get("dateTime", ""), reverse=True)
+        
+        # Try each meeting until we find one with a transcript
+        for event in events:
+            try:
+                join_url = event.get("onlineMeeting", {}).get("joinUrl")
+                if not join_url:
+                    continue
+                
+                # Get meeting ID
+                encoded_url = urllib.parse.quote(join_url, safe="")
+                meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
+                
+                meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
+                if meeting_resp.status_code == 401:  # Token expired
+                    logger.info("Token expired during meeting lookup, attempting to refresh...")
+                    refresh_token = session.get("refresh_token")
+                    if refresh_token:
+                        success, error = refresh_token(refresh_token)
+                        if success:
+                            headers["Authorization"] = f"Bearer {session['access_token']}"
+                            meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
+                        else:
+                            continue
+                
+                meetings = meeting_resp.json().get("value", [])
+                if not meetings:
+                    continue
+                
+                meeting_id = meetings[0]["id"]
+                logger.info(f"Found meeting ID: {meeting_id} for {event.get('subject', 'Untitled Meeting')}")
+                
+                # Get transcript IDs
+                transcript_ids, error = get_meeting_transcriptions(meeting_id, headers)
+                if error or not transcript_ids:
+                    continue
+                
+                # Try to get transcript content
+                for transcript_id in transcript_ids:
+                    vtt_text, error_message = get_transcript_content_by_id(meeting_id, transcript_id, headers)
+                    if vtt_text:
+                        try:
+                            ai_summary = analyze_meeting_transcript(vtt_text)
+                            return {
+                                'subject': event.get("subject", "Untitled Meeting"),
+                                'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
+                                'join_url': join_url,
+                                'transcript_html': f"""
+                                <div class="meeting-summary">
+                                    {ai_summary}
+                                </div>
+                                """,
+                                'status': 'success'
+                            }, None
+                        except Exception as e:
+                            logger.error(f"AI analysis failed: {str(e)}")
+                            continue
+                
+            except Exception as e:
+                logger.error(f"Error processing meeting: {str(e)}")
+                continue
+        
+        return None, "No meetings with transcripts found"
+        
+    except Exception as e:
+        logger.error(f"Error getting latest meeting: {str(e)}")
+        return None, str(e)
+
 # ✅ Flask App Setup
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -366,131 +463,21 @@ def meetings():
         return redirect("/")
 
     headers = {"Authorization": f"Bearer {token}"}
-    events_list = []
     error_message = None
 
     try:
-        # Try to get calendar events
-        start = datetime.utcnow() - timedelta(days=30)
-        end = datetime.utcnow()
-        url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
+        # Get the latest meeting with transcript
+        meeting_data, error = get_latest_meeting_with_transcript(headers)
         
-        # Log the token type and first few characters for debugging
-        logger.info(f"Token type: {type(token)}, Token preview: {token[:10]}...")
+        if error:
+            error_message = error
+            return render_template('meetings.html', events=[], error=error_message)
         
-        # Add timeout and retry for calendar request
-        for attempt in range(3):
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                if response.status_code == 401:  # Token expired
-                    logger.info("Token expired, attempting to refresh...")
-                    refresh_token = session.get("refresh_token")
-                    if refresh_token:
-                        success, error = refresh_token(refresh_token)
-                        if success:
-                            headers["Authorization"] = f"Bearer {session['access_token']}"
-                            continue
-                    return redirect("/login")  # Redirect to login if refresh fails
-                
-                events_resp = response.json()
-                logger.info(f"Successfully retrieved calendar events. Count: {len(events_resp.get('value', []))}")
-                break
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Calendar request attempt {attempt + 1} failed: {str(e)}")
-                if attempt == 2:
-                    raise
-                time.sleep(1)
-
-        for event in events_resp.get("value", []):
-            try:
-                event_data = {
-                    'subject': event.get("subject", "Untitled Meeting"),
-                    'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
-                    'join_url': event.get("onlineMeeting", {}).get("joinUrl"),
-                    'transcript_html': None,
-                    'status': 'success'
-                }
-                
-                # Log event details
-                logger.info(f"Processing event: {event_data['subject']} at {event_data['start']}")
-                
-                if event_data['join_url']:
-                    encoded_url = urllib.parse.quote(event_data['join_url'], safe="")
-                    meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
-                    
-                    logger.info(f"Looking up meeting with URL: {meeting_lookup_url}")
-                    # Add timeout for meeting lookup
-                    meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
-                    
-                    if meeting_resp.status_code == 401:  # Token expired
-                        logger.info("Token expired during meeting lookup, attempting to refresh...")
-                        refresh_token = session.get("refresh_token")
-                        if refresh_token:
-                            success, error = refresh_token(refresh_token)
-                            if success:
-                                headers["Authorization"] = f"Bearer {session['access_token']}"
-                                meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
-                            else:
-                                return redirect("/login")
-                    
-                    meetings = meeting_resp.json().get("value", [])
-
-                    if meetings:
-                        meeting_id = meetings[0]["id"]
-                        logger.info(f"Found meeting ID: {meeting_id} for {event_data['subject']}")
-                        
-                        # Get all transcription IDs for the meeting
-                        transcript_ids, error = get_meeting_transcriptions(meeting_id, headers)
-                        
-                        if error:
-                            logger.warning(f"Error getting transcriptions for meeting {event_data['subject']}: {error}")
-                            event_data['status'] = 'warning'
-                            event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error}</div>"
-                        elif transcript_ids:
-                            # Try each transcript ID until we get content
-                            vtt_text = None
-                            error_message = None
-                            
-                            for transcript_id in transcript_ids:
-                                logger.info(f"Trying transcript ID: {transcript_id}")
-                                vtt_text, error_message = get_transcript_content_by_id(meeting_id, transcript_id, headers)
-                                if vtt_text:
-                                    break
-                            
-                            if vtt_text:
-                                try:
-                                    ai_summary = analyze_meeting_transcript(vtt_text)
-                                    event_data['transcript_html'] = f"""
-                                    <div class="meeting-summary">
-                                        {ai_summary}
-                                    </div>
-                                    """
-                                    logger.info(f"Successfully processed transcript for {event_data['subject']}")
-                                except Exception as e:
-                                    logger.error(f"AI analysis failed for meeting {event_data['subject']}: {str(e)}")
-                                    event_data['status'] = 'warning'
-                                    event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>AI Analysis Failed: {str(e)}</div>"
-                            else:
-                                event_data['status'] = 'warning'
-                                if error_message and error_message.get('html'):
-                                    event_data['transcript_html'] = error_message['html']
-                                else:
-                                    event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error_message.get('message', 'Unknown error')}</div>"
-                        else:
-                            logger.info(f"No transcript IDs found for meeting {event_data['subject']}")
-                            event_data['status'] = 'info'
-                            event_data['transcript_html'] = "<div class='text-muted'><i class='fas fa-info-circle me-1'></i>No transcript available</div>"
-                    else:
-                        logger.info(f"No meeting details found for {event_data['subject']}")
-                        event_data['status'] = 'info'
-                        event_data['transcript_html'] = "<div class='text-muted'><i class='fas fa-info-circle me-1'></i>Meeting details not available</div>"
-
-                events_list.append(event_data)
-            except Exception as e:
-                logger.error(f"Error processing event {event.get('subject', 'Unknown')}: {str(e)}")
-                continue
-
-        return render_template('meetings.html', events=events_list, error=error_message)
+        if meeting_data:
+            return render_template('meetings.html', events=[meeting_data], error=None)
+        else:
+            return render_template('meetings.html', events=[], error="No meetings with transcripts found")
+            
     except Exception as e:
         logger.error(f"Error in meetings route: {str(e)}")
         return render_template('meetings.html', events=[], error="Failed to load meetings. Please try again later.")
