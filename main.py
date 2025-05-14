@@ -427,12 +427,14 @@ app.secret_key = os.urandom(24)
 app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 
-CLIENT_ID = "2d0df75c-6bc1-446f-bcf0-a22aea96c9b3"
-CLIENT_SECRET = "U7p8Q~vHMHQyI8ZpZu5-R7CaaPV_pXOSwvXgTakG"
-TENANT_ID = "22438506-028b-45c7-9bd3-8badf683d7e3"
+CLIENT_ID = os.environ.get("CLIENT_ID", "")
+CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "")
+TENANT_ID = os.environ.get("TENANT_ID", "")
 REDIRECT_URI = "https://test-api-aht9.onrender.com/callback"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPE = "openid profile email OnlineMeetings.Read OnlineMeetingTranscript.Read.All Calendars.Read User.Read"
+
+logger.info(f"[Startup] Using CLIENT_ID (app id): {CLIENT_ID}")
 
 @app.route("/")
 def home():
@@ -493,6 +495,7 @@ def callback():
 
 @app.route("/meetings")
 def meetings():
+    logger.info(f"[meetings route] Using CLIENT_ID (app id): {CLIENT_ID}")
     token = session.get("access_token")
     if not token:
         return redirect("/")
