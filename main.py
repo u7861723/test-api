@@ -158,15 +158,21 @@ def get_transcript_content_by_id(meeting_id, transcript_id, headers):
             logger.info("Successfully retrieved transcript content")
             return content_resp.text, None
         elif content_resp.status_code == 402:
-            logger.warning("Premium subscription required for this transcript")
+            # 优化：显示微软API返回的详细错误信息
+            try:
+                error_details = content_resp.json()
+                error_message = error_details.get('error', {}).get('message', 'This meeting transcript requires a premium subscription.')
+                logger.warning(f"PaymentRequired details: {error_details}")
+            except Exception:
+                error_message = 'This meeting transcript requires a premium subscription.'
             return None, {
                 'type': 'premium_required',
-                'message': 'This meeting transcript requires a premium subscription.',
-                'html': """
+                'message': error_message,
+                'html': f"""
                 <div class="premium-message">
                     <i class="fas fa-crown me-1"></i>
                     <strong>Premium Feature</strong>
-                    <p class="mb-0">This meeting transcript requires a premium subscription.</p>
+                    <p class="mb-0">{error_message}</p>
                     <small>Please contact your administrator to upgrade your subscription.</small>
                 </div>
                 """

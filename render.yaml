@@ -13,7 +13,7 @@ services:
         # value: 080b1826-6d96-4ab4-b614-ccbd4a0114d7
       - key: CLIENT_SECRET
         value: U7p8Q~vHMHQyI8ZpZu5-R7CaaPV_pXOSwvXgTakG
-        # value: 0898439f-73cc-4718-8df2-384a8437d578
+        # value: rp_8Q~~kQGivK_C5PotHmck5WX8O3tXqkSjc9apR
       - key: TENANT_ID
         value: 22438506-028b-45c7-9bd3-8badf683d7e3
         # value: 22438506-028b-45c7-9bd3-8badf683d7e3
