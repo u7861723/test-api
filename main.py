@@ -100,15 +100,6 @@ def parse_vtt_with_speakers(vtt_text):
         logger.error(f"Error parsing VTT: {str(e)}")
         return "<div class='text-danger'>Error parsing transcript</div>"
 
-def get_user_id(headers):
-    """Get current user's id"""
-    url = "https://graph.microsoft.com/v1.0/me"
-    resp = requests.get(url, headers=headers, timeout=10)
-    if resp.status_code == 200:
-        return resp.json().get("id"), None
-    else:
-        return None, f"Failed to get user id: {resp.status_code}"
-
 def get_meeting_transcriptions(meeting_id, headers):
     """Get all transcription IDs for a meeting using /me/onlineMeetings/ API"""
     logger.info(f"[get_meeting_transcriptions] Start for meeting_id: {meeting_id}")
