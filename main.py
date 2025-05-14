@@ -314,6 +314,8 @@ def get_latest_meeting_with_transcript(headers):
                 return None, "Token expired"
         
         events = response.json().get("value", [])
+        logger.info(f"Found {len(events)} calendar events")
+        
         if not events:
             return None, "No meetings found in the last 30 days"
         
@@ -325,13 +327,18 @@ def get_latest_meeting_with_transcript(headers):
             try:
                 join_url = event.get("onlineMeeting", {}).get("joinUrl")
                 if not join_url:
+                    logger.info(f"Skipping event {event.get('subject')} - no join URL")
                     continue
+                
+                logger.info(f"Processing event: {event.get('subject')} at {event.get('start', {}).get('dateTime')}")
                 
                 # Get meeting ID
                 encoded_url = urllib.parse.quote(join_url, safe="")
                 meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
                 
+                logger.info(f"Looking up meeting with URL: {meeting_lookup_url}")
                 meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
+                
                 if meeting_resp.status_code == 401:  # Token expired
                     logger.info("Token expired during meeting lookup, attempting to refresh...")
                     refresh_token = session.get("refresh_token")
@@ -345,6 +352,7 @@ def get_latest_meeting_with_transcript(headers):
                 
                 meetings = meeting_resp.json().get("value", [])
                 if not meetings:
+                    logger.info(f"No meeting details found for {event.get('subject')}")
                     continue
                 
                 meeting_id = meetings[0]["id"]
@@ -352,14 +360,28 @@ def get_latest_meeting_with_transcript(headers):
                 
                 # Get transcript IDs
                 transcript_ids, error = get_meeting_transcriptions(meeting_id, headers)
-                if error or not transcript_ids:
+                if error:
+                    logger.warning(f"Error getting transcriptions: {error}")
                     continue
+                
+                if not transcript_ids:
+                    logger.info(f"No transcript IDs found for meeting {event.get('subject')}")
+                    continue
+                
+                logger.info(f"Found {len(transcript_ids)} transcript IDs for meeting {event.get('subject')}")
                 
                 # Try to get transcript content
                 for transcript_id in transcript_ids:
+                    logger.info(f"Trying to get content for transcript ID: {transcript_id}")
                     vtt_text, error_message = get_transcript_content_by_id(meeting_id, transcript_id, headers)
+                    
+                    if error_message:
+                        logger.warning(f"Error getting transcript content: {error_message.get('message')}")
+                        continue
+                    
                     if vtt_text:
                         try:
+                            logger.info("Successfully got transcript content, analyzing...")
                             ai_summary = analyze_meeting_transcript(vtt_text)
                             return {
                                 'subject': event.get("subject", "Untitled Meeting"),
