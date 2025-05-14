@@ -109,15 +109,10 @@ def get_user_id(headers):
         return None, f"Failed to get user id: {resp.status_code}"
 
 def get_meeting_transcriptions(meeting_id, headers):
-    """Get all transcription IDs for a meeting using /users/{user_id}/onlineMeetings/ API"""
+    """Get all transcription IDs for a meeting using /me/onlineMeetings/ API"""
     logger.info(f"[get_meeting_transcriptions] Start for meeting_id: {meeting_id}")
-    user_id, err = get_user_id(headers)
-    logger.info(f"[get_meeting_transcriptions] user_id: {user_id}, err: {err}")
-    if err:
-        logger.error(f"[get_meeting_transcriptions] Error getting user_id: {err}")
-        return [], err
     try:
-        url = f"https://graph.microsoft.com/beta/users/{user_id}/onlineMeetings/{meeting_id}/transcripts"
+        url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
         logger.info(f"[get_meeting_transcriptions] Requesting transcript IDs from: {url}")
         logger.info("[get_meeting_transcriptions] Before sending request for transcripts")
         response = requests.get(url, headers=headers, timeout=10)
@@ -147,15 +142,10 @@ def get_meeting_transcriptions(meeting_id, headers):
         return [], error_msg
 
 def get_transcript_content_by_id(meeting_id, transcript_id, headers):
-    """Get transcript content using /users/{user_id}/onlineMeetings/ API"""
+    """Get transcript content using /me/onlineMeetings/ API"""
     logger.info(f"[get_transcript_content_by_id] Start for meeting_id: {meeting_id}, transcript_id: {transcript_id}")
-    user_id, err = get_user_id(headers)
-    logger.info(f"[get_transcript_content_by_id] user_id: {user_id}, err: {err}")
-    if err:
-        logger.error(f"[get_transcript_content_by_id] Error getting user_id: {err}")
-        return None, {'type': 'error', 'message': err}
     try:
-        content_url = f"https://graph.microsoft.com/beta/users/{user_id}/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
+        content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
         content_headers = headers.copy()
         content_headers["Accept"] = "text/vtt"
         logger.info(f"[get_transcript_content_by_id] Requesting transcript content from: {content_url}")
