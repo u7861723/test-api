@@ -99,15 +99,26 @@ def parse_vtt_with_speakers(vtt_text):
         logger.error(f"Error parsing VTT: {str(e)}")
         return "<div class='text-danger'>Error parsing transcript</div>"
 
+def get_user_id(headers):
+    """Get current user's id"""
+    url = "https://graph.microsoft.com/v1.0/me"
+    resp = requests.get(url, headers=headers, timeout=10)
+    if resp.status_code == 200:
+        return resp.json().get("id"), None
+    else:
+        return None, f"Failed to get user id: {resp.status_code}"
+
 def get_meeting_transcriptions(meeting_id, headers):
-    """Get all transcription IDs for a meeting"""
+    """Get all transcription IDs for a meeting using /users/{user_id}/onlineMeetings/ API"""
+    user_id, err = get_user_id(headers)
+    if err:
+        logger.error(err)
+        return [], err
     try:
-        url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
+        url = f"https://graph.microsoft.com/beta/users/{user_id}/onlineMeetings/{meeting_id}/transcripts"
         logger.info(f"Requesting transcript IDs from: {url}")
         response = requests.get(url, headers=headers, timeout=10)
-        
         logger.info(f"Transcript IDs response status: {response.status_code}")
-        
         if response.status_code == 200:
             transcripts = response.json().get("value", [])
             if transcripts:
@@ -131,17 +142,18 @@ def get_meeting_transcriptions(meeting_id, headers):
         return [], error_msg
 
 def get_transcript_content_by_id(meeting_id, transcript_id, headers):
-    """Get transcript content using transcript ID"""
+    """Get transcript content using /users/{user_id}/onlineMeetings/ API"""
+    user_id, err = get_user_id(headers)
+    if err:
+        logger.error(err)
+        return None, {'type': 'error', 'message': err}
     try:
-        content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
+        content_url = f"https://graph.microsoft.com/beta/users/{user_id}/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
         content_headers = headers.copy()
         content_headers["Accept"] = "text/vtt"
-        
         logger.info(f"Requesting transcript content from: {content_url}")
         content_resp = requests.get(content_url, headers=content_headers, timeout=10)
-        
         logger.info(f"Transcript content response status: {content_resp.status_code}")
-        
         if content_resp.status_code == 200:
             logger.info("Successfully retrieved transcript content")
             return content_resp.text, None
@@ -176,7 +188,6 @@ def get_transcript_content_by_id(meeting_id, transcript_id, headers):
                 </div>
                 """
             }
-            
     except requests.exceptions.RequestException as e:
         logger.error(f"Request error for transcript: {str(e)}")
         return None, {
