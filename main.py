@@ -79,29 +79,129 @@ def parse_vtt_with_speakers(vtt_text):
         logger.error(f"Error parsing VTT: {str(e)}")
         return "<div class='text-danger'>Error parsing transcript</div>"
 
-def get_transcript_content(content_url, headers, meeting_subject):
-    """Get transcript content with better error handling"""
+def get_meeting_transcriptions(meeting_id, headers):
+    """Get all transcription IDs for a meeting"""
     try:
-        content_resp = requests.get(content_url, headers=headers, timeout=10)
+        url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            transcripts = response.json().get("value", [])
+            if transcripts:
+                transcript_ids = [t["id"] for t in transcripts]
+                logger.info(f"✅ Retrieved {len(transcript_ids)} transcription IDs: {transcript_ids}")
+                return transcript_ids, None
+            else:
+                logger.info("❌ No transcription found.")
+                return [], "No transcriptions available for this meeting"
+        else:
+            error_msg = f"Failed to retrieve transcriptions (Error {response.status_code})"
+            try:
+                error_details = response.json()
+                logger.error(f"❌ {error_msg}: {error_details}")
+            except:
+                logger.error(f"❌ {error_msg}")
+            return [], error_msg
+    except Exception as e:
+        error_msg = f"Error getting transcriptions: {str(e)}"
+        logger.error(error_msg)
+        return [], error_msg
+
+def get_transcript_content_by_id(meeting_id, transcript_id, headers):
+    """Get transcript content using transcript ID"""
+    try:
+        content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
+        content_headers = headers.copy()
+        content_headers["Accept"] = "text/vtt"
+        
+        content_resp = requests.get(content_url, headers=content_headers, timeout=10)
         
         if content_resp.status_code == 200:
-            return content_resp.text
-        elif content_resp.status_code == 402:
-            logger.error(f"Payment required for transcript access - Meeting: {meeting_subject}")
-            return None, "This meeting transcript requires a paid subscription to access."
-        elif content_resp.status_code == 403:
-            logger.error(f"Permission denied for transcript - Meeting: {meeting_subject}")
-            return None, "You don't have permission to access this meeting transcript."
-        elif content_resp.status_code == 404:
-            logger.error(f"Transcript not found - Meeting: {meeting_subject}")
-            return None, "Meeting transcript not found."
+            return content_resp.text, None
         else:
-            logger.error(f"Failed to get transcript (Status {content_resp.status_code}) - Meeting: {meeting_subject}")
-            return None, f"Failed to get transcript (Error {content_resp.status_code})"
+            error_message = f"Failed to get transcript (Error {content_resp.status_code})"
+            try:
+                error_details = content_resp.json()
+                logger.error(f"Error details: {error_details}")
+            except:
+                logger.error(error_message)
+            return None, error_message
             
     except requests.exceptions.RequestException as e:
-        logger.error(f"Request error for transcript - Meeting: {meeting_subject} - Error: {str(e)}")
+        logger.error(f"Request error for transcript: {str(e)}")
         return None, "Network error while fetching transcript"
+
+def generate_admin_consent_url():
+    """Generate admin consent URL"""
+    state = str(uuid.uuid4())
+    session["admin_consent_state"] = state
+    admin_consent_url = (
+        f"{AUTHORITY}/adminconsent?"
+        f"client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}"
+        f"&state={state}"
+    )
+    return admin_consent_url
+
+def generate_user_consent_url(user_email):
+    """Generate user consent URL for admin"""
+    state = str(uuid.uuid4())
+    session["user_consent_state"] = state
+    # Encode user email in state to identify the user
+    encoded_email = urllib.parse.quote(user_email)
+    user_consent_url = (
+        f"{AUTHORITY}/adminconsent?"
+        f"client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}"
+        f"&state={state}"
+        f"&user_email={encoded_email}"
+    )
+    return user_consent_url
+
+def check_permissions(token):
+    """Check if user has required permissions"""
+    try:
+        headers = {"Authorization": f"Bearer {token}"}
+        # Check if user has transcript permissions
+        url = "https://graph.microsoft.com/v1.0/me"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            user_data = response.json()
+            logger.info(f"User permissions check successful for {user_data.get('userPrincipalName')}")
+            return True, None
+        elif response.status_code == 403:
+            # Get user email for consent URL
+            user_email = user_data.get('userPrincipalName') if user_data else None
+            if user_email:
+                user_consent_url = generate_user_consent_url(user_email)
+                return False, {
+                    'type': 'permission_denied',
+                    'message': 'You do not have the required permissions.',
+                    'user_consent_url': user_consent_url,
+                    'user_email': user_email
+                }
+            else:
+                return False, {
+                    'type': 'permission_denied',
+                    'message': 'You do not have the required permissions. Please contact your administrator.'
+                }
+        else:
+            error_msg = f"Permission check failed (Error {response.status_code})"
+            try:
+                error_details = response.json()
+                logger.error(f"❌ {error_msg}: {error_details}")
+            except:
+                logger.error(f"❌ {error_msg}")
+            return False, {
+                'type': 'error',
+                'message': error_msg
+            }
+    except Exception as e:
+        error_msg = f"Error checking permissions: {str(e)}"
+        logger.error(error_msg)
+        return False, {
+            'type': 'error',
+            'message': error_msg
+        }
 
 # ✅ Flask App Setup
 app = Flask(__name__)
@@ -135,6 +235,17 @@ def login():
 
 @app.route("/callback")
 def callback():
+    if request.args.get("state") == session.get("user_consent_state"):
+        # Handle user consent callback
+        if "error" in request.args:
+            error = request.args.get("error")
+            error_description = request.args.get("error_description", "Unknown error")
+            logger.error(f"User consent failed: {error} - {error_description}")
+            return render_template('login.html', error=f"User consent failed: {error_description}")
+        
+        # User consent successful, redirect to login
+        return redirect("/login")
+    
     if request.args.get("state") != session.get("oauth_state"):
         return "❌ State mismatch", 400
 
@@ -153,6 +264,11 @@ def callback():
 
     if "access_token" in token_response:
         session["access_token"] = token_response["access_token"]
+        # Check permissions after getting token
+        has_permissions, error = check_permissions(token_response["access_token"])
+        if not has_permissions:
+            session.clear()
+            return render_template('login.html', error=error)
         return redirect("/meetings")
     else:
         return f"❌ Token error: {token_response}", 400
@@ -165,16 +281,22 @@ def meetings():
 
     headers = {"Authorization": f"Bearer {token}"}
     events_list = []
+    error_message = None
 
     try:
         start = datetime.utcnow() - timedelta(days=30)
         end = datetime.utcnow()
         url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
         
+        # Log the token type and first few characters for debugging
+        logger.info(f"Token type: {type(token)}, Token preview: {token[:10]}...")
+        
         # Add timeout and retry for calendar request
         for attempt in range(3):
             try:
                 events_resp = requests.get(url, headers=headers, timeout=10).json()
+                # Log successful calendar request
+                logger.info(f"Successfully retrieved calendar events. Count: {len(events_resp.get('value', []))}")
                 break
             except requests.exceptions.RequestException as e:
                 logger.error(f"Calendar request attempt {attempt + 1} failed: {str(e)}")
@@ -188,8 +310,12 @@ def meetings():
                     'subject': event.get("subject", "Untitled Meeting"),
                     'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
                     'join_url': event.get("onlineMeeting", {}).get("joinUrl"),
-                    'transcript_html': None
+                    'transcript_html': None,
+                    'status': 'success'
                 }
+                
+                # Log event details
+                logger.info(f"Processing event: {event_data['subject']} at {event_data['start']}")
                 
                 if event_data['join_url']:
                     encoded_url = urllib.parse.quote(event_data['join_url'], safe="")
@@ -201,17 +327,24 @@ def meetings():
 
                     if meetings:
                         meeting_id = meetings[0]["id"]
-                        transcripts_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
-                        transcripts_resp = requests.get(transcripts_url, headers=headers, timeout=10).json()
-                        transcript_list = transcripts_resp.get("value", [])
-
-                        if transcript_list:
-                            transcript_id = transcript_list[0]["id"]
-                            content_url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
-                            content_headers = headers.copy()
-                            content_headers["Accept"] = "text/vtt"
+                        logger.info(f"Found meeting ID: {meeting_id} for {event_data['subject']}")
+                        
+                        # Get all transcription IDs for the meeting
+                        transcript_ids, error = get_meeting_transcriptions(meeting_id, headers)
+                        
+                        if error:
+                            event_data['status'] = 'warning'
+                            event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error}</div>"
+                        elif transcript_ids:
+                            # Try each transcript ID until we get content
+                            vtt_text = None
+                            error_message = None
                             
-                            vtt_text, error_message = get_transcript_content(content_url, content_headers, event_data['subject'])
+                            for transcript_id in transcript_ids:
+                                logger.info(f"Trying transcript ID: {transcript_id}")
+                                vtt_text, error_message = get_transcript_content_by_id(meeting_id, transcript_id, headers)
+                                if vtt_text:
+                                    break
                             
                             if vtt_text:
                                 try:
@@ -225,16 +358,19 @@ def meetings():
                                     </details>
                                     {parse_vtt_with_speakers(vtt_text)}
                                     """
+                                    logger.info(f"Successfully processed transcript for {event_data['subject']}")
                                 except Exception as e:
                                     logger.error(f"AI analysis failed for meeting {event_data['subject']}: {str(e)}")
-                                    event_data['transcript_html'] = f"<div class='text-danger'><i class='fas fa-exclamation-circle me-1'></i>AI Analysis Failed: {str(e)}</div>"
+                                    event_data['status'] = 'warning'
+                                    event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>AI Analysis Failed: {str(e)}</div>"
                             else:
+                                event_data['status'] = 'warning'
                                 event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error_message}</div>"
                         else:
-                            logger.info(f"No transcript found for meeting {event_data['subject']}")
+                            event_data['status'] = 'info'
                             event_data['transcript_html'] = "<div class='text-muted'><i class='fas fa-info-circle me-1'></i>No transcript available</div>"
                     else:
-                        logger.info(f"No meeting details found for {event_data['subject']}")
+                        event_data['status'] = 'info'
                         event_data['transcript_html'] = "<div class='text-muted'><i class='fas fa-info-circle me-1'></i>Meeting details not available</div>"
 
                 events_list.append(event_data)
@@ -242,7 +378,7 @@ def meetings():
                 logger.error(f"Error processing event {event.get('subject', 'Unknown')}: {str(e)}")
                 continue
 
-        return render_template('meetings.html', events=events_list)
+        return render_template('meetings.html', events=events_list, error=error_message)
     except Exception as e:
         logger.error(f"Error in meetings route: {str(e)}")
         return render_template('meetings.html', events=[], error="Failed to load meetings. Please try again later.")
