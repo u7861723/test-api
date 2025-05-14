@@ -149,7 +149,15 @@ def get_transcript_content_by_id(meeting_id, transcript_id, headers):
             logger.warning("Premium subscription required for this transcript")
             return None, {
                 'type': 'premium_required',
-                'message': 'This meeting transcript requires a premium subscription.'
+                'message': 'This meeting transcript requires a premium subscription.',
+                'html': """
+                <div class="premium-message">
+                    <i class="fas fa-crown me-1"></i>
+                    <strong>Premium Feature</strong>
+                    <p class="mb-0">This meeting transcript requires a premium subscription.</p>
+                    <small>Please contact your administrator to upgrade your subscription.</small>
+                </div>
+                """
             }
         else:
             error_message = f"Failed to get transcript (Error {content_resp.status_code})"
@@ -160,14 +168,26 @@ def get_transcript_content_by_id(meeting_id, transcript_id, headers):
                 logger.error(error_message)
             return None, {
                 'type': 'error',
-                'message': error_message
+                'message': error_message,
+                'html': f"""
+                <div class="text-warning">
+                    <i class="fas fa-exclamation-triangle me-1"></i>
+                    {error_message}
+                </div>
+                """
             }
             
     except requests.exceptions.RequestException as e:
         logger.error(f"Request error for transcript: {str(e)}")
         return None, {
             'type': 'error',
-            'message': "Network error while fetching transcript"
+            'message': "Network error while fetching transcript",
+            'html': """
+            <div class="text-warning">
+                <i class="fas fa-exclamation-triangle me-1"></i>
+                Network error while fetching transcript
+            </div>
+            """
         }
 
 def generate_admin_consent_url():
@@ -241,6 +261,33 @@ def check_permissions(token):
             'type': 'error',
             'message': error_msg
         }
+
+def refresh_token(refresh_token):
+    """Refresh access token using refresh token"""
+    try:
+        token_url = f"{AUTHORITY}/oauth2/v2.0/token"
+        data = {
+            "grant_type": "refresh_token",
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "refresh_token": refresh_token,
+            "scope": SCOPE,
+        }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        response = requests.post(token_url, data=data, headers=headers)
+        
+        if response.status_code == 200:
+            token_data = response.json()
+            session["access_token"] = token_data["access_token"]
+            if "refresh_token" in token_data:
+                session["refresh_token"] = token_data["refresh_token"]
+            return True, None
+        else:
+            logger.error(f"Token refresh failed: {response.status_code}")
+            return False, "Failed to refresh token"
+    except Exception as e:
+        logger.error(f"Error refreshing token: {str(e)}")
+        return False, str(e)
 
 # ✅ Flask App Setup
 app = Flask(__name__)
@@ -323,6 +370,7 @@ def meetings():
     error_message = None
 
     try:
+        # Try to get calendar events
         start = datetime.utcnow() - timedelta(days=30)
         end = datetime.utcnow()
         url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z"
@@ -333,8 +381,18 @@ def meetings():
         # Add timeout and retry for calendar request
         for attempt in range(3):
             try:
-                events_resp = requests.get(url, headers=headers, timeout=10).json()
-                # Log successful calendar request
+                response = requests.get(url, headers=headers, timeout=10)
+                if response.status_code == 401:  # Token expired
+                    logger.info("Token expired, attempting to refresh...")
+                    refresh_token = session.get("refresh_token")
+                    if refresh_token:
+                        success, error = refresh_token(refresh_token)
+                        if success:
+                            headers["Authorization"] = f"Bearer {session['access_token']}"
+                            continue
+                    return redirect("/login")  # Redirect to login if refresh fails
+                
+                events_resp = response.json()
                 logger.info(f"Successfully retrieved calendar events. Count: {len(events_resp.get('value', []))}")
                 break
             except requests.exceptions.RequestException as e:
@@ -362,8 +420,20 @@ def meetings():
                     
                     logger.info(f"Looking up meeting with URL: {meeting_lookup_url}")
                     # Add timeout for meeting lookup
-                    meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10).json()
-                    meetings = meeting_resp.get("value", [])
+                    meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
+                    
+                    if meeting_resp.status_code == 401:  # Token expired
+                        logger.info("Token expired during meeting lookup, attempting to refresh...")
+                        refresh_token = session.get("refresh_token")
+                        if refresh_token:
+                            success, error = refresh_token(refresh_token)
+                            if success:
+                                headers["Authorization"] = f"Bearer {session['access_token']}"
+                                meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
+                            else:
+                                return redirect("/login")
+                    
+                    meetings = meeting_resp.json().get("value", [])
 
                     if meetings:
                         meeting_id = meetings[0]["id"]
@@ -402,17 +472,10 @@ def meetings():
                                     event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>AI Analysis Failed: {str(e)}</div>"
                             else:
                                 event_data['status'] = 'warning'
-                                if error_message.get('type') == 'premium_required':
-                                    event_data['transcript_html'] = f"""
-                                    <div class='text-warning'>
-                                        <i class='fas fa-crown me-1'></i>
-                                        {error_message['message']}
-                                        <br>
-                                        <small class='text-muted'>This meeting requires a premium subscription to access the transcript.</small>
-                                    </div>
-                                    """
+                                if error_message and error_message.get('html'):
+                                    event_data['transcript_html'] = error_message['html']
                                 else:
-                                    event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error_message['message']}</div>"
+                                    event_data['transcript_html'] = f"<div class='text-warning'><i class='fas fa-exclamation-triangle me-1'></i>{error_message.get('message', 'Unknown error')}</div>"
                         else:
                             logger.info(f"No transcript IDs found for meeting {event_data['subject']}")
                             event_data['status'] = 'info'
