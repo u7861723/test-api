@@ -303,9 +303,10 @@ def get_latest_meeting_with_transcript(headers):
         # Get meetings from the last 30 days
         start = datetime.utcnow() - timedelta(days=30)
         end = datetime.utcnow()
-        url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z&$top=1&$orderby=start/dateTime desc"
+        # 增加获取的会议数量，从1个改为10个
+        url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z&$top=10&$orderby=start/dateTime desc"
         
-        logger.info("Fetching latest calendar event...")
+        logger.info("Fetching recent calendar events...")
         response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 401:  # Token expired
@@ -327,92 +328,144 @@ def get_latest_meeting_with_transcript(headers):
         if not events:
             return None, "No meetings found in the last 30 days"
         
-        # Get the latest event
-        event = events[0]
-        try:
-            join_url = event.get("onlineMeeting", {}).get("joinUrl")
-            if not join_url:
-                logger.info(f"Latest event {event.get('subject')} - no join URL")
-                return None, "Latest meeting is not an online meeting"
-            
-            logger.info(f"Processing latest event: {event.get('subject')} at {event.get('start', {}).get('dateTime')}")
-            
-            # Get meeting ID
-            encoded_url = urllib.parse.quote(join_url, safe="")
-            meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
-            
-            logger.info(f"Looking up meeting with URL: {meeting_lookup_url}")
-            meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
-            
-            if meeting_resp.status_code == 401:  # Token expired
-                logger.info("Token expired during meeting lookup, attempting to refresh...")
-                refresh_token = session.get("refresh_token")
-                if refresh_token:
-                    success, error = refresh_token(refresh_token)
-                    if success:
-                        headers["Authorization"] = f"Bearer {session['access_token']}"
-                        meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
-                    else:
-                        return None, "Failed to refresh token"
-            
-            meetings = meeting_resp.json().get("value", [])
-            if not meetings:
-                logger.info(f"No meeting details found for {event.get('subject')}")
-                return None, "Could not find meeting details"
-            
-            meeting_id = meetings[0]["id"]
-            logger.info(f"Found meeting ID: {meeting_id} for {event.get('subject', 'Untitled Meeting')}")
-            
-            # Get transcript IDs
-            transcript_ids, error = get_meeting_transcriptions(meeting_id, headers)
-            if error:
-                logger.warning(f"Error getting transcriptions: {error}")
-                return None, error
-            
-            if not transcript_ids:
-                logger.info(f"No transcript IDs found for meeting {event.get('subject')}")
-                return None, "No transcriptions available for this meeting"
-            
-            logger.info(f"Found {len(transcript_ids)} transcript IDs for meeting {event.get('subject')}")
-            
-            # Try to get transcript content
-            for transcript_id in transcript_ids:
-                logger.info(f"Trying to get content for transcript ID: {transcript_id}")
-                vtt_text, error_message = get_transcript_content_by_id(meeting_id, transcript_id, headers)
-                
-                if error_message:
-                    logger.warning(f"Error getting transcript content: {error_message.get('message')}")
+        # 遍历所有会议，找到第一个有纪要的会议
+        for event in events:
+            try:
+                join_url = event.get("onlineMeeting", {}).get("joinUrl")
+                if not join_url:
+                    logger.info(f"Event {event.get('subject')} - no join URL, skipping")
                     continue
                 
-                if vtt_text:
-                    try:
-                        logger.info("Successfully got transcript content, analyzing...")
-                        ai_summary = analyze_meeting_transcript(vtt_text)
-                        ai_summary_html = markdown.markdown(ai_summary, extensions=['extra', 'nl2br'])
-                        return {
-                            'subject': event.get("subject", "Untitled Meeting"),
-                            'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
-                            'join_url': join_url,
-                            'transcript_html': f"""
-                            <div class="meeting-summary">
-                                {ai_summary_html}
-                            </div>
-                            """,
-                            'status': 'success'
-                        }, None
-                    except Exception as e:
-                        logger.error(f"AI analysis failed: {str(e)}")
-                        return None, "Failed to analyze transcript"
-            
-            return None, "No transcript content available"
-            
-        except Exception as e:
-            logger.error(f"Error processing meeting: {str(e)}")
-            return None, str(e)
+                logger.info(f"Processing event: {event.get('subject')} at {event.get('start', {}).get('dateTime')}")
+                
+                # Get meeting ID
+                encoded_url = urllib.parse.quote(join_url, safe="")
+                meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
+                
+                logger.info(f"Looking up meeting with URL: {meeting_lookup_url}")
+                meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
+                
+                if meeting_resp.status_code == 401:  # Token expired
+                    logger.info("Token expired during meeting lookup, attempting to refresh...")
+                    refresh_token = session.get("refresh_token")
+                    if refresh_token:
+                        success, error = refresh_token(refresh_token)
+                        if success:
+                            headers["Authorization"] = f"Bearer {session['access_token']}"
+                            meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
+                        else:
+                            continue  # 跳过当前会议，尝试下一个
+                
+                meetings = meeting_resp.json().get("value", [])
+                if not meetings:
+                    logger.info(f"No meeting details found for {event.get('subject')}")
+                    continue
+                
+                meeting_id = meetings[0]["id"]
+                logger.info(f"Found meeting ID: {meeting_id} for {event.get('subject', 'Untitled Meeting')}")
+                
+                # Get transcript IDs
+                transcript_ids, error = get_meeting_transcriptions_with_retry(meeting_id, headers)
+                if error or not transcript_ids:
+                    logger.info(f"No transcriptions for meeting {event.get('subject')}, trying next meeting")
+                    continue
+                
+                logger.info(f"Found {len(transcript_ids)} transcript IDs for meeting {event.get('subject')}")
+                
+                # Try to get transcript content
+                for transcript_id in transcript_ids:
+                    logger.info(f"Trying to get content for transcript ID: {transcript_id}")
+                    vtt_text, error_message = get_transcript_content_by_id(meeting_id, transcript_id, headers)
+                    
+                    if error_message:
+                        logger.warning(f"Error getting transcript content: {error_message.get('message')}")
+                        continue
+                    
+                    if vtt_text:
+                        try:
+                            logger.info("Successfully got transcript content, analyzing...")
+                            ai_summary = analyze_meeting_transcript(vtt_text)
+                            ai_summary_html = markdown.markdown(ai_summary, extensions=['extra', 'nl2br'])
+                            return {
+                                'subject': event.get("subject", "Untitled Meeting"),
+                                'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
+                                'join_url': join_url,
+                                'transcript_html': f"""
+                                <div class="meeting-summary">
+                                    {ai_summary_html}
+                                </div>
+                                """,
+                                'status': 'success'
+                            }, None
+                        except Exception as e:
+                            logger.error(f"AI analysis failed: {str(e)}")
+                            continue  # 尝试下一个会议
+                
+            except Exception as e:
+                logger.error(f"Error processing meeting: {str(e)}")
+                continue  # 尝试下一个会议
+        
+        return None, "No meetings with transcripts found in the last 30 days"
         
     except Exception as e:
         logger.error(f"Error getting latest meeting: {str(e)}")
         return None, str(e)
+
+def check_meeting_recording_settings(meeting_id, headers):
+    """检查会议录制设置"""
+    try:
+        url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings/{meeting_id}"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            meeting_data = response.json()
+            recording_enabled = meeting_data.get('allowMeetingChat', False)
+            logger.info(f"Meeting recording settings: {meeting_data}")
+            return recording_enabled
+        return False
+    except Exception as e:
+        logger.error(f"Error checking meeting settings: {str(e)}")
+        return False
+
+def get_meeting_transcriptions_with_retry(meeting_id, headers, max_retries=3, delay=5):
+    """带重试机制的获取会议记录"""
+    for attempt in range(max_retries):
+        try:
+            transcript_ids, error = get_meeting_transcriptions(meeting_id, headers)
+            if transcript_ids:
+                return transcript_ids, None
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+    return [], "No transcriptions available after retries"
+
+def check_transcript_status(meeting_id, headers):
+    """检查会议记录状态"""
+    try:
+        url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('@odata.count', 0) == 0:
+                # 检查会议是否已结束
+                meeting_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings/{meeting_id}"
+                meeting_response = requests.get(meeting_url, headers=headers)
+                if meeting_response.status_code == 200:
+                    meeting_data = meeting_response.json()
+                    end_time = datetime.fromisoformat(meeting_data.get('endDateTime', '').replace('Z', ''))
+                    if datetime.utcnow() < end_time:
+                        return 'in_progress'
+                    return 'not_available'
+            return 'available'
+        return 'error'
+    except Exception as e:
+        logger.error(f"Error checking transcript status: {str(e)}")
+        return 'error'
 
 # ✅ Flask App Setup
 app = Flask(__name__)
