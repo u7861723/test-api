@@ -16,10 +16,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Azure OpenAI 配置
-AZURE_OPENAI_API_KEY = "8L4wUnNaOdRfQVKyCWXFVN5Al73fhCsUO7CyRh0GvKe77uOjL9z0JQQJ99BBACMsfrFXJ3w3AAAAACOG3el6"
-AZURE_OPENAI_ENDPOINT = "https://92445-m6ndgh0n-westus3.services.ai.azure.com"
-AZURE_OPENAI_API_VERSION = "2024-05-01-preview"
-AZURE_OPENAI_DEPLOYMENT_NAME = "gpt-4o"
+AZURE_OPENAI_API_KEY = "2SHKaZLHvA86Afv9cl8P3H5A39yxcH7VFAFIPKZHNBuiWii9ZA4lJQQJ99BEACHYHv6XJ3w3AAAAACOG0A1O"
+AZURE_OPENAI_ENDPOINT = "https://u7761-maoqersn-eastus2.cognitiveservices.azure.com"
+AZURE_OPENAI_API_VERSION = "2025-01-01-preview"
+AZURE_OPENAI_DEPLOYMENT_NAME = "gpt-o3-mini"
 
 # 在文件开头添加调试信息
 logger.info("Environment variables:")
@@ -70,16 +70,11 @@ def analyze_meeting_transcript(transcript_text, max_retries=3):
             
             # 构造请求体
             data = {
+                "model": "gpt-o3-mini",
                 "messages": [
                     {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
                     {"role": "user", "content": transcript_text}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 2000,
-                "top_p": 0.95,
-                "frequency_penalty": 0,
-                "presence_penalty": 0,
-                "stop": None
+                ]
             }
             
             # 添加请求日志
@@ -570,12 +565,11 @@ def test_azure_openai_connection():
             "Content-Type": "application/json"
         }
         data = {
+            "model": "gpt-o3-mini",
             "messages": [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": "Hello, this is a test message."}
-            ],
-            "temperature": 0.7,
-            "max_tokens": 100
+            ]
         }
 
         # 打印配置信息
