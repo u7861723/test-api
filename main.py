@@ -6,7 +6,6 @@ import os
 import urllib.parse
 from datetime import datetime, timedelta
 import re
-import openai
 import logging
 import time
 import markdown
@@ -20,11 +19,18 @@ logger = logging.getLogger(__name__)
 AZURE_OPENAI_API_KEY = "8L4wUnNaOdRfQVKyCWXFVN5Al73fhCsUO7CyRh0GvKe77uOjL9z0JQQJ99BBACMsfrFXJ3w3AAAAACOG3el6"
 AZURE_OPENAI_ENDPOINT = "https://92445-m6ndgh0n-westus3.services.ai.azure.com"
 AZURE_OPENAI_API_VERSION = "2024-05-01-preview"
-AZURE_OPENAI_DEPLOYMENT_NAME = "gpt-4o"  # 修正部署名称，去掉连字符
+AZURE_OPENAI_DEPLOYMENT_NAME = "gpt-4o"
 
-# 删除或注释掉原来的 DeepSeek 配置
-# openai.api_key = "sk-95aca95db16343f4a019f3b3b8c8c76f"
-# openai.api_base = "https://api.deepseek.com/v1"
+# 在文件开头添加调试信息
+logger.info("Environment variables:")
+logger.info(f"HTTP_PROXY: {os.environ.get('HTTP_PROXY')}")
+logger.info(f"HTTPS_PROXY: {os.environ.get('HTTPS_PROXY')}")
+
+# 添加 Azure OpenAI 配置日志
+logger.info("Azure OpenAI configuration:")
+logger.info(f"API Endpoint: {AZURE_OPENAI_ENDPOINT}")
+logger.info(f"API Version: {AZURE_OPENAI_API_VERSION}")
+logger.info(f"Deployment Name: {AZURE_OPENAI_DEPLOYMENT_NAME}")
 
 # 添加简单的内存缓存
 class MeetingCache:
@@ -50,9 +56,10 @@ meeting_cache = MeetingCache()
 # 在分析函数中使用缓存
 @lru_cache(maxsize=100)
 def analyze_meeting_transcript(transcript_text, max_retries=3):
+    """Analyze meeting transcript with retry mechanism"""
     for attempt in range(max_retries):
         try:
-            # 直接构造 API URL
+            # 构造 API URL
             url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
             
             # 设置请求头
@@ -64,20 +71,72 @@ def analyze_meeting_transcript(transcript_text, max_retries=3):
             # 构造请求体
             data = {
                 "messages": [
-                    {"role": "system", "content": "You are a helpful AI meeting assistant."},
-                    {"role": "user", "content": transcript_text}
+                    {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
+                    {"role": "user", "content": f"""
+You are a smart meeting assistant. Please analyze the meeting transcript and provide a well-formatted summary.
+Please structure your response in the following format:
+
+# Meeting Summary
+
+## Meeting Details
+- Date: [Meeting Date]
+- Title: [Meeting Title]
+
+## Executive Summary
+[Provide a concise 2-3 sentence summary of the meeting]
+
+## Key Points
+1. [First key point]
+2. [Second key point]
+3. [Third key point]
+...
+
+## Action Items
+- [ ] [Action item 1] - [Responsible person]
+- [ ] [Action item 2] - [Responsible person]
+...
+
+## Next Steps
+1. [Next step 1]
+2. [Next step 2]
+...
+
+Transcript:
+\"\"\"
+{transcript_text}
+\"\"\"
+"""}
                 ],
                 "temperature": 0.7,
                 "max_tokens": 2000
             }
             
-            # 直接使用 requests 发送请求
-            response = requests.post(url, headers=headers, json=data)
-            response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"]
+            # 添加请求日志
+            logger.info(f"Sending request to {url}")
             
+            # 发送请求
+            response = requests.post(url, headers=headers, json=data, timeout=30)
+            response.raise_for_status()
+            
+            # 解析响应
+            response_data = response.json()
+            if not response_data.get("choices") or not response_data["choices"][0].get("message", {}).get("content"):
+                raise ValueError("Invalid response format")
+                
+            logger.info("AI analysis completed successfully")
+            return response_data["choices"][0]["message"]["content"]
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                raise
+        except ValueError as e:
+            logger.error(f"Invalid response: {str(e)}")
+            raise
         except Exception as e:
-            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+            logger.error(f"Unexpected error: {str(e)}")
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
             else:
@@ -532,14 +591,6 @@ AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPE = "openid profile email OnlineMeetings.Read OnlineMeetingTranscript.Read.All Calendars.Read User.Read"
 
 logger.info(f"[Startup] Using CLIENT_ID (app id): {CLIENT_ID}")
-
-# 在文件开头添加调试信息
-logger.info("Environment variables:")
-logger.info(f"HTTP_PROXY: {os.environ.get('HTTP_PROXY')}")
-logger.info(f"HTTPS_PROXY: {os.environ.get('HTTPS_PROXY')}")
-
-logger.info(f"OpenAI version: {openai.__version__}")
-logger.info(f"OpenAI configuration: {openai.api_key}, {openai.api_base}")
 
 @app.route("/")
 def home():
