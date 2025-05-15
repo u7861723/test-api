@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 AZURE_OPENAI_API_KEY = "2SHKaZLHvA86Afv9cl8P3H5A39yxcH7VFAFIPKZHNBuiWii9ZA4lJQQJ99BEACHYHv6XJ3w3AAAAACOG0A1O"
 AZURE_OPENAI_ENDPOINT = "https://u7761-maoqersn-eastus2.cognitiveservices.azure.com"
 AZURE_OPENAI_API_VERSION = "2025-01-01-preview"
-AZURE_OPENAI_DEPLOYMENT_NAME = "gpt-o3-mini"
+AZURE_OPENAI_DEPLOYMENT_NAME = "o3-mini"
 
 # 在文件开头添加调试信息
 logger.info("Environment variables:")
@@ -70,7 +70,7 @@ def analyze_meeting_transcript(transcript_text, max_retries=3):
             
             # 构造请求体
             data = {
-                "model": "gpt-o3-mini",
+                "model": "o3-mini",
                 "messages": [
                     {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
                     {"role": "user", "content": transcript_text}
@@ -565,7 +565,7 @@ def test_azure_openai_connection():
             "Content-Type": "application/json"
         }
         data = {
-            "model": "gpt-o3-mini",
+            "model": "o3-mini",
             "messages": [
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": "Hello, this is a test message."}
