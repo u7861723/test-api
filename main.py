@@ -473,6 +473,83 @@ def test_azure_openai_connection():
         logger.error(f"❌ Connection test failed with error: {str(e)}")
         return False
 
+def get_latest_meeting_with_transcript(headers):
+    """Get the latest meeting with transcript"""
+    try:
+        # 获取最近7天的会议
+        start = datetime.utcnow() - timedelta(days=7)
+        end = datetime.utcnow()
+        url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z&$top=5&$orderby=start/dateTime desc"
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        
+        if response.status_code == 401:  # Token expired
+            refresh_token = session.get("refresh_token")
+            if refresh_token:
+                success, error = refresh_token(refresh_token)
+                if success:
+                    headers["Authorization"] = f"Bearer {session['access_token']}"
+                    response = requests.get(url, headers=headers, timeout=5)
+                else:
+                    return None, "Failed to refresh token"
+            else:
+                return None, "Token expired"
+        
+        events = response.json().get("value", [])
+        if not events:
+            return None, "No meetings found in the last 7 days"
+        
+        # 遍历会议
+        for event in events:
+            join_url = event.get("onlineMeeting", {}).get("joinUrl")
+            if not join_url:
+                continue
+            
+            # 获取会议ID
+            encoded_url = urllib.parse.quote(join_url, safe="")
+            meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
+            
+            meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=5)
+            if meeting_resp.status_code == 401:
+                continue
+            
+            meetings = meeting_resp.json().get("value", [])
+            if not meetings:
+                continue
+            
+            meeting_id = meetings[0]["id"]
+            transcript_ids, error = get_meeting_transcriptions_with_retry(meeting_id, headers)
+            
+            if transcript_ids:
+                # 只获取第一个可用的会议记录
+                transcript_id = transcript_ids[0]
+                vtt_text, error_message = get_transcript_content_by_id(meeting_id, transcript_id, headers)
+                
+                if vtt_text:
+                    try:
+                        ai_summary = analyze_meeting_transcript(vtt_text)
+                        ai_summary_html = markdown.markdown(ai_summary, extensions=['extra', 'nl2br'])
+                        return {
+                            'subject': event.get("subject", "Untitled Meeting"),
+                            'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
+                            'join_url': join_url,
+                            'transcript_html': f"""
+                            <div class="meeting-summary">
+                                {ai_summary_html}
+                            </div>
+                            """,
+                            'status': 'success'
+                        }, None
+                    except Exception as e:
+                        logger.error(f"AI analysis failed: {str(e)}")
+                        continue
+        
+        return None, "No meetings with transcripts found"
+        
+    except Exception as e:
+        logger.error(f"Error getting latest meeting: {str(e)}")
+        return None, str(e)
+
 # ✅ Flask App Setup
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
