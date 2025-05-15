@@ -53,12 +53,14 @@ def analyze_meeting_transcript(transcript_text, max_retries=3):
     """Analyze meeting transcript with retry mechanism"""
     for attempt in range(max_retries):
         try:
-            # 初始化 Azure OpenAI 客户端
+            # 初始化 Azure OpenAI 客户端 - 修改初始化方式
             client = openai.AzureOpenAI(
                 api_key=AZURE_OPENAI_API_KEY,
                 api_version=AZURE_OPENAI_API_VERSION,
-                azure_endpoint=AZURE_OPENAI_ENDPOINT
-                # 删除 timeout 参数，因为新版本不支持
+                azure_endpoint=AZURE_OPENAI_ENDPOINT,
+                default_headers={
+                    "api-key": AZURE_OPENAI_API_KEY
+                }
             )
             
             # 添加输入验证
@@ -68,7 +70,12 @@ def analyze_meeting_transcript(transcript_text, max_retries=3):
             # 添加日志记录
             logger.info(f"Starting AI analysis attempt {attempt + 1}")
             
-            prompt = f"""
+            # 调用 Azure OpenAI API - 修改调用方式
+            response = client.chat.completions.create(
+                model=AZURE_OPENAI_DEPLOYMENT_NAME,
+                messages=[
+                    {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
+                    {"role": "user", "content": f"""
 You are a smart meeting assistant. Please analyze the meeting transcript and provide a well-formatted summary.
 Please structure your response in the following format:
 
@@ -101,13 +108,7 @@ Transcript:
 \"\"\"
 {transcript_text}
 \"\"\"
-"""
-            # 调用 Azure OpenAI API
-            response = client.chat.completions.create(
-                model=AZURE_OPENAI_DEPLOYMENT_NAME,
-                messages=[
-                    {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
-                    {"role": "user", "content": prompt}
+"""}
                 ],
                 temperature=0.7,
                 max_tokens=2000
