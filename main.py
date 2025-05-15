@@ -72,7 +72,15 @@ def analyze_meeting_transcript(transcript_text, max_retries=3):
             data = {
                 "model": "o3-mini",
                 "messages": [
-                    {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
+                    {"role": "system", "content": """I'm providing a meeting transcript. Please generate meeting minutes with a particular focus on working-group.
+While covering the general meeting flow, please ensure the minutes thoroughly detail:
+Key Discussion Points related to working-group:
+Decisions Made regarding working-group:
+Action Items specifically concerning working-group: (Include assigned person and deadline if available).
+A brief summary of other topics discussed.
+Overall list of attendees (if discernible).
+Date and Time (if discernible).
+Format the output clearly in markdown with proper sections and bullet points."""},
                     {"role": "user", "content": transcript_text}
                 ]
             }
