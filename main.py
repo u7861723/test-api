@@ -157,36 +157,20 @@ def parse_vtt_with_speakers(vtt_text):
 
 def get_meeting_transcriptions(meeting_id, headers):
     """Get all transcription IDs for a meeting using /me/onlineMeetings/ API"""
-    logger.info(f"[get_meeting_transcriptions] Start for meeting_id: {meeting_id}")
     try:
         url = f"https://graph.microsoft.com/beta/me/onlineMeetings/{meeting_id}/transcripts"
-        logger.info(f"[get_meeting_transcriptions] Requesting transcript IDs from: {url}")
-        logger.info("[get_meeting_transcriptions] Before sending request for transcripts")
-        response = requests.get(url, headers=headers, timeout=10)
-        logger.info("[get_meeting_transcriptions] After sending request for transcripts")
-        logger.info(f"[get_meeting_transcriptions] Transcript IDs response status: {response.status_code}")
+        response = requests.get(url, headers=headers, timeout=5)  # 减少超时时间
+        
         if response.status_code == 200:
             transcripts = response.json().get("value", [])
-            logger.info(f"[get_meeting_transcriptions] Response JSON: {response.json()}")
             if transcripts:
                 transcript_ids = [t["id"] for t in transcripts]
-                logger.info(f"[get_meeting_transcriptions] ✅ Retrieved {len(transcript_ids)} transcription IDs: {transcript_ids}")
+                logger.info(f"Found {len(transcript_ids)} transcript(s) for meeting {meeting_id[:10]}...")
                 return transcript_ids, None
-            else:
-                logger.info("[get_meeting_transcriptions] ❌ No transcription found.")
-                return [], "No transcriptions available for this meeting"
-        else:
-            error_msg = f"Failed to retrieve transcriptions (Error {response.status_code})"
-            try:
-                error_details = response.json()
-                logger.error(f"[get_meeting_transcriptions] ❌ {error_msg}: {error_details}")
-            except Exception as e:
-                logger.error(f"[get_meeting_transcriptions] ❌ {error_msg}, Exception: {str(e)}")
-            return [], error_msg
+            return [], "No transcriptions available"
+        return [], f"Failed to retrieve transcriptions (Error {response.status_code})"
     except Exception as e:
-        error_msg = f"[get_meeting_transcriptions] Error getting transcriptions: {str(e)}"
-        logger.error(error_msg)
-        return [], error_msg
+        return [], f"Error getting transcriptions: {str(e)}"
 
 def get_transcript_content_by_id(meeting_id, transcript_id, headers):
     """Get transcript content using /me/onlineMeetings/ API"""
@@ -352,119 +336,15 @@ def refresh_token(refresh_token):
         logger.error(f"Error refreshing token: {str(e)}")
         return False, str(e)
 
-def get_latest_meeting_with_transcript(headers):
-    """Get the latest meeting with transcript"""
-    try:
-        # Get meetings from the last 30 days
-        start = datetime.utcnow() - timedelta(days=30)
-        end = datetime.utcnow()
-        # 增加获取的会议数量，从1个改为10个
-        url = f"https://graph.microsoft.com/v1.0/me/calendar/calendarView?startDateTime={start.isoformat()}Z&endDateTime={end.isoformat()}Z&$top=10&$orderby=start/dateTime desc"
-        
-        logger.info("Fetching recent calendar events...")
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 401:  # Token expired
-            logger.info("Token expired, attempting to refresh...")
-            refresh_token = session.get("refresh_token")
-            if refresh_token:
-                success, error = refresh_token(refresh_token)
-                if success:
-                    headers["Authorization"] = f"Bearer {session['access_token']}"
-                    response = requests.get(url, headers=headers, timeout=10)
-                else:
-                    return None, "Failed to refresh token"
-            else:
-                return None, "Token expired"
-        
-        events = response.json().get("value", [])
-        logger.info(f"Found {len(events)} calendar events")
-        
-        if not events:
-            return None, "No meetings found in the last 30 days"
-        
-        # 遍历所有会议，找到第一个有纪要的会议
-        for event in events:
-            try:
-                join_url = event.get("onlineMeeting", {}).get("joinUrl")
-                if not join_url:
-                    logger.info(f"Event {event.get('subject')} - no join URL, skipping")
-                    continue
-                
-                logger.info(f"Processing event: {event.get('subject')} at {event.get('start', {}).get('dateTime')}")
-                
-                # Get meeting ID
-                encoded_url = urllib.parse.quote(join_url, safe="")
-                meeting_lookup_url = f"https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=JoinWebUrl eq '{encoded_url}'"
-                
-                logger.info(f"Looking up meeting with URL: {meeting_lookup_url}")
-                meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
-                
-                if meeting_resp.status_code == 401:  # Token expired
-                    logger.info("Token expired during meeting lookup, attempting to refresh...")
-                    refresh_token = session.get("refresh_token")
-                    if refresh_token:
-                        success, error = refresh_token(refresh_token)
-                        if success:
-                            headers["Authorization"] = f"Bearer {session['access_token']}"
-                            meeting_resp = requests.get(meeting_lookup_url, headers=headers, timeout=10)
-                        else:
-                            continue  # 跳过当前会议，尝试下一个
-                
-                meetings = meeting_resp.json().get("value", [])
-                if not meetings:
-                    logger.info(f"No meeting details found for {event.get('subject')}")
-                    continue
-                
-                meeting_id = meetings[0]["id"]
-                logger.info(f"Found meeting ID: {meeting_id} for {event.get('subject', 'Untitled Meeting')}")
-                
-                # Get transcript IDs
-                transcript_ids, error = get_meeting_transcriptions_with_retry(meeting_id, headers)
-                if error or not transcript_ids:
-                    logger.info(f"No transcriptions for meeting {event.get('subject')}, trying next meeting")
-                    continue
-                
-                logger.info(f"Found {len(transcript_ids)} transcript IDs for meeting {event.get('subject')}")
-                
-                # Try to get transcript content
-                for transcript_id in transcript_ids:
-                    logger.info(f"Trying to get content for transcript ID: {transcript_id}")
-                    vtt_text, error_message = get_transcript_content_by_id(meeting_id, transcript_id, headers)
-                    
-                    if error_message:
-                        logger.warning(f"Error getting transcript content: {error_message.get('message')}")
-                        continue
-                    
-                    if vtt_text:
-                        try:
-                            logger.info("Successfully got transcript content, analyzing...")
-                            ai_summary = analyze_meeting_transcript(vtt_text)
-                            ai_summary_html = markdown.markdown(ai_summary, extensions=['extra', 'nl2br'])
-                            return {
-                                'subject': event.get("subject", "Untitled Meeting"),
-                                'start': datetime.fromisoformat(event.get("start", {}).get("dateTime", "").replace('Z', '')),
-                                'join_url': join_url,
-                                'transcript_html': f"""
-                                <div class="meeting-summary">
-                                    {ai_summary_html}
-                                </div>
-                                """,
-                                'status': 'success'
-                            }, None
-                        except Exception as e:
-                            logger.error(f"AI analysis failed: {str(e)}")
-                            continue  # 尝试下一个会议
-                
-            except Exception as e:
-                logger.error(f"Error processing meeting: {str(e)}")
-                continue  # 尝试下一个会议
-        
-        return None, "No meetings with transcripts found in the last 30 days"
-        
-    except Exception as e:
-        logger.error(f"Error getting latest meeting: {str(e)}")
-        return None, str(e)
+def get_meeting_transcriptions_with_retry(meeting_id, headers, max_retries=2, delay=2):
+    """带重试机制的获取会议记录，减少重试次数和等待时间"""
+    for attempt in range(max_retries):
+        transcript_ids, error = get_meeting_transcriptions(meeting_id, headers)
+        if transcript_ids:
+            return transcript_ids, None
+        if attempt < max_retries - 1:
+            time.sleep(delay)
+    return [], "No transcriptions available after retries"
 
 def check_meeting_recording_settings(meeting_id, headers):
     """检查会议录制设置"""
@@ -481,22 +361,6 @@ def check_meeting_recording_settings(meeting_id, headers):
     except Exception as e:
         logger.error(f"Error checking meeting settings: {str(e)}")
         return False
-
-def get_meeting_transcriptions_with_retry(meeting_id, headers, max_retries=3, delay=5):
-    """带重试机制的获取会议记录"""
-    for attempt in range(max_retries):
-        try:
-            transcript_ids, error = get_meeting_transcriptions(meeting_id, headers)
-            if transcript_ids:
-                return transcript_ids, None
-            if attempt < max_retries - 1:
-                logger.info(f"Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
-                time.sleep(delay)
-        except Exception as e:
-            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(delay)
-    return [], "No transcriptions available after retries"
 
 def check_transcript_status(meeting_id, headers):
     """检查会议记录状态"""
