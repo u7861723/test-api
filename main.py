@@ -50,85 +50,37 @@ meeting_cache = MeetingCache()
 # 在分析函数中使用缓存
 @lru_cache(maxsize=100)
 def analyze_meeting_transcript(transcript_text, max_retries=3):
-    """Analyze meeting transcript with retry mechanism"""
     for attempt in range(max_retries):
         try:
-            # 初始化 Azure OpenAI 客户端 - 修改初始化方式
-            client = openai.AzureOpenAI(
-                api_key=AZURE_OPENAI_API_KEY,
-                api_version=AZURE_OPENAI_API_VERSION,
-                azure_endpoint=AZURE_OPENAI_ENDPOINT,
-                default_headers={
-                    "api-key": AZURE_OPENAI_API_KEY
-                }
-            )
+            # 直接构造 API URL
+            url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
             
-            # 添加输入验证
-            if not transcript_text or len(transcript_text.strip()) == 0:
-                raise ValueError("Empty transcript text")
-
-            # 添加日志记录
-            logger.info(f"Starting AI analysis attempt {attempt + 1}")
+            # 设置请求头
+            headers = {
+                "api-key": AZURE_OPENAI_API_KEY,
+                "Content-Type": "application/json"
+            }
             
-            # 调用 Azure OpenAI API - 修改调用方式
-            response = client.chat.completions.create(
-                model=AZURE_OPENAI_DEPLOYMENT_NAME,
-                messages=[
-                    {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
-                    {"role": "user", "content": f"""
-You are a smart meeting assistant. Please analyze the meeting transcript and provide a well-formatted summary.
-Please structure your response in the following format:
-
-# Meeting Summary
-
-## Meeting Details
-- Date: [Meeting Date]
-- Title: [Meeting Title]
-
-## Executive Summary
-[Provide a concise 2-3 sentence summary of the meeting]
-
-## Key Points
-1. [First key point]
-2. [Second key point]
-3. [Third key point]
-...
-
-## Action Items
-- [ ] [Action item 1] - [Responsible person]
-- [ ] [Action item 2] - [Responsible person]
-...
-
-## Next Steps
-1. [Next step 1]
-2. [Next step 2]
-...
-
-Transcript:
-\"\"\"
-{transcript_text}
-\"\"\"
-"""}
+            # 构造请求体
+            data = {
+                "messages": [
+                    {"role": "system", "content": "You are a helpful AI meeting assistant."},
+                    {"role": "user", "content": transcript_text}
                 ],
-                temperature=0.7,
-                max_tokens=2000
-            )
+                "temperature": 0.7,
+                "max_tokens": 2000
+            }
             
-            # 添加响应验证
-            if not response.choices or not response.choices[0].message.content:
-                raise ValueError("Empty response from AI model")
-                
-            logger.info("AI analysis completed successfully")
-            return response.choices[0].message.content
+            # 直接使用 requests 发送请求
+            response = requests.post(url, headers=headers, json=data)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
             
         except Exception as e:
-            logger.error(f"AI analysis attempt {attempt + 1} failed: {str(e)}")
+            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
             if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                logger.info(f"Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
+                time.sleep(2 ** attempt)
             else:
-                logger.error("All retry attempts failed")
                 raise
 
 def parse_vtt_with_speakers(vtt_text):
@@ -580,6 +532,14 @@ AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPE = "openid profile email OnlineMeetings.Read OnlineMeetingTranscript.Read.All Calendars.Read User.Read"
 
 logger.info(f"[Startup] Using CLIENT_ID (app id): {CLIENT_ID}")
+
+# 在文件开头添加调试信息
+logger.info("Environment variables:")
+logger.info(f"HTTP_PROXY: {os.environ.get('HTTP_PROXY')}")
+logger.info(f"HTTPS_PROXY: {os.environ.get('HTTPS_PROXY')}")
+
+logger.info(f"OpenAI version: {openai.__version__}")
+logger.info(f"OpenAI configuration: {openai.api_key}, {openai.api_base}")
 
 @app.route("/")
 def home():
