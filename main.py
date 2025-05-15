@@ -10,19 +10,63 @@ import openai
 import logging
 import time
 import markdown
+from functools import lru_cache
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ✅ DeepSeek client
-openai.api_key = "sk-95aca95db16343f4a019f3b3b8c8c76f"
-openai.api_base = "https://api.deepseek.com/v1"
+# Azure OpenAI 配置
+AZURE_OPENAI_API_KEY = "8L4wUnNaOdRfQVKyCWXFVN5Al73fhCsUO7CyRh0GvKe77uOjL9z0JQQJ99BBACMsfrFXJ3w3AAAAACOG3el6"
+AZURE_OPENAI_ENDPOINT = "https://92445-m6ndgh0n-westus3.services.ai.azure.com"
+AZURE_OPENAI_API_VERSION = "2024-05-01-preview"
+AZURE_OPENAI_DEPLOYMENT_NAME = "gpt-4o"  # 修正部署名称，去掉连字符
 
+# 删除或注释掉原来的 DeepSeek 配置
+# openai.api_key = "sk-95aca95db16343f4a019f3b3b8c8c76f"
+# openai.api_base = "https://api.deepseek.com/v1"
+
+# 添加简单的内存缓存
+class MeetingCache:
+    def __init__(self):
+        self.cache = {}
+        self.expiry = {}
+
+    def set(self, meeting_id, data):
+        self.cache[meeting_id] = data
+        self.expiry[meeting_id] = datetime.now() + timedelta(hours=1)
+
+    def get(self, meeting_id):
+        if meeting_id in self.cache:
+            if datetime.now() < self.expiry[meeting_id]:
+                return self.cache[meeting_id]
+            else:
+                del self.cache[meeting_id]
+                del self.expiry[meeting_id]
+        return None
+
+meeting_cache = MeetingCache()
+
+# 在分析函数中使用缓存
+@lru_cache(maxsize=100)
 def analyze_meeting_transcript(transcript_text, max_retries=3):
     """Analyze meeting transcript with retry mechanism"""
     for attempt in range(max_retries):
         try:
+            client = openai.AzureOpenAI(
+                api_key=AZURE_OPENAI_API_KEY,
+                api_version=AZURE_OPENAI_API_VERSION,
+                azure_endpoint=AZURE_OPENAI_ENDPOINT,
+                timeout=30  # 添加超时设置
+            )
+            
+            # 添加输入验证
+            if not transcript_text or len(transcript_text.strip()) == 0:
+                raise ValueError("Empty transcript text")
+
+            # 添加日志记录
+            logger.info(f"Starting AI analysis attempt {attempt + 1}")
+            
             prompt = f"""
 You are a smart meeting assistant. Please analyze the meeting transcript and provide a well-formatted summary.
 Please structure your response in the following format:
@@ -57,20 +101,32 @@ Transcript:
 {transcript_text}
 \"\"\"
 """
-            response = openai.ChatCompletion.create(
-                model="deepseek-chat",
+            # 调用 Azure OpenAI API
+            response = client.chat.completions.create(
+                model=AZURE_OPENAI_DEPLOYMENT_NAME,  # 使用 GPT-4 部署
                 messages=[
                     {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
                     {"role": "user", "content": prompt}
                 ],
-                stream=False
+                temperature=0.7,
+                max_tokens=2000
             )
-            return response.choices[0].message['content']
+            
+            # 添加响应验证
+            if not response.choices or not response.choices[0].message.content:
+                raise ValueError("Empty response from AI model")
+                
+            logger.info("AI analysis completed successfully")
+            return response.choices[0].message.content
+            
         except Exception as e:
             logger.error(f"AI analysis attempt {attempt + 1} failed: {str(e)}")
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)  # Exponential backoff
+                wait_time = 2 ** attempt
+                logger.info(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
             else:
+                logger.error("All retry attempts failed")
                 raise
 
 def parse_vtt_with_speakers(vtt_text):
@@ -466,6 +522,47 @@ def check_transcript_status(meeting_id, headers):
     except Exception as e:
         logger.error(f"Error checking transcript status: {str(e)}")
         return 'error'
+
+def process_meeting_transcript(meeting_id, transcript_content):
+    try:
+        # 检查缓存
+        cached_result = meeting_cache.get(meeting_id)
+        if cached_result:
+            logger.info(f"Using cached result for meeting {meeting_id}")
+            return cached_result
+
+        # 分析会议记录
+        ai_summary = analyze_meeting_transcript(transcript_content)
+        
+        # 转换 Markdown 为 HTML
+        html_content = markdown.markdown(
+            ai_summary,
+            extensions=['extra', 'nl2br']
+        )
+        
+        result = {
+            'status': 'success',
+            'html_content': html_content,
+            'markdown_content': ai_summary
+        }
+        
+        # 缓存结果
+        meeting_cache.set(meeting_id, result)
+        
+        return result
+            
+    except ValueError as ve:
+        logger.error(f"Validation error: {str(ve)}")
+        return {
+            'status': 'error',
+            'message': f"Invalid input: {str(ve)}"
+        }
+    except Exception as e:
+        logger.error(f"Processing failed: {str(e)}")
+        return {
+            'status': 'error',
+            'message': f"Processing failed: {str(e)}"
+        }
 
 # ✅ Flask App Setup
 app = Flask(__name__)
