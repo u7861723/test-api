@@ -116,7 +116,17 @@ Transcript:
             
             # 发送请求
             response = requests.post(url, headers=headers, json=data, timeout=30)
-            response.raise_for_status()
+            
+            # 添加详细的错误日志
+            if response.status_code != 200:
+                logger.error(f"API Error: Status {response.status_code}")
+                logger.error(f"Response headers: {response.headers}")
+                try:
+                    error_details = response.json()
+                    logger.error(f"Error details: {error_details}")
+                except:
+                    logger.error(f"Raw response: {response.text}")
+                response.raise_for_status()
             
             # 解析响应
             response_data = response.json()
@@ -129,7 +139,9 @@ Transcript:
         except requests.exceptions.RequestException as e:
             logger.error(f"Network error: {str(e)}")
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+                wait_time = 2 ** attempt
+                logger.info(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
             else:
                 raise
         except ValueError as e:
@@ -577,6 +589,53 @@ def process_meeting_transcript(meeting_id, transcript_content):
             'message': f"Processing failed: {str(e)}"
         }
 
+def test_azure_openai_connection():
+    """Test Azure OpenAI connection and configuration"""
+    try:
+        # 构造测试请求
+        url = f"{AZURE_OPENAI_ENDPOINT}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT_NAME}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
+        headers = {
+            "api-key": AZURE_OPENAI_API_KEY,
+            "Content-Type": "application/json"
+        }
+        data = {
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": "Hello, this is a test message."}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 100
+        }
+
+        # 打印配置信息
+        logger.info("Testing Azure OpenAI connection with configuration:")
+        logger.info(f"Endpoint: {AZURE_OPENAI_ENDPOINT}")
+        logger.info(f"Deployment: {AZURE_OPENAI_DEPLOYMENT_NAME}")
+        logger.info(f"API Version: {AZURE_OPENAI_API_VERSION}")
+        logger.info(f"API Key (first 10 chars): {AZURE_OPENAI_API_KEY[:10]}...")
+
+        # 发送测试请求
+        logger.info("Sending test request...")
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        
+        # 检查响应
+        if response.status_code == 200:
+            logger.info("✅ Connection test successful!")
+            return True
+        else:
+            logger.error(f"❌ Connection test failed with status {response.status_code}")
+            logger.error(f"Response headers: {response.headers}")
+            try:
+                error_details = response.json()
+                logger.error(f"Error details: {error_details}")
+            except:
+                logger.error(f"Raw response: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Connection test failed with error: {str(e)}")
+        return False
+
 # ✅ Flask App Setup
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -681,6 +740,12 @@ def logout():
     session.clear()
     return redirect("/")
 
+# 在应用启动时运行测试
 if __name__ == "__main__":
+    # 运行连接测试
+    if not test_azure_openai_connection():
+        logger.error("Azure OpenAI connection test failed. Please check your configuration.")
+        exit(1)
+        
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
