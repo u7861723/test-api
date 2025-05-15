@@ -1,7 +1,8 @@
 flask==3.0.2
 flask-session==0.7.0
+cachelib==0.9.0  # 添加这个依赖
 requests==2.31.0
-openai==1.12.0  # 更新到最新版本以支持 Azure OpenAI
+openai==1.12.0
 markdown==3.5.2
-python-dotenv==1.0.1  # 用于管理环境变量
+python-dotenv==1.0.1
 urllib3==2.2.1
