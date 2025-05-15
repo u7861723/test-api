@@ -53,11 +53,12 @@ def analyze_meeting_transcript(transcript_text, max_retries=3):
     """Analyze meeting transcript with retry mechanism"""
     for attempt in range(max_retries):
         try:
+            # 初始化 Azure OpenAI 客户端
             client = openai.AzureOpenAI(
                 api_key=AZURE_OPENAI_API_KEY,
                 api_version=AZURE_OPENAI_API_VERSION,
-                azure_endpoint=AZURE_OPENAI_ENDPOINT,
-                timeout=30  # 添加超时设置
+                azure_endpoint=AZURE_OPENAI_ENDPOINT
+                # 删除 timeout 参数，因为新版本不支持
             )
             
             # 添加输入验证
@@ -103,7 +104,7 @@ Transcript:
 """
             # 调用 Azure OpenAI API
             response = client.chat.completions.create(
-                model=AZURE_OPENAI_DEPLOYMENT_NAME,  # 使用 GPT-4 部署
+                model=AZURE_OPENAI_DEPLOYMENT_NAME,
                 messages=[
                     {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
                     {"role": "user", "content": prompt}
