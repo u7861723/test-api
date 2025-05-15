@@ -72,43 +72,14 @@ def analyze_meeting_transcript(transcript_text, max_retries=3):
             data = {
                 "messages": [
                     {"role": "system", "content": "You are a helpful AI meeting assistant. Always format your response in markdown with clear sections and bullet points."},
-                    {"role": "user", "content": f"""
-You are a smart meeting assistant. Please analyze the meeting transcript and provide a well-formatted summary.
-Please structure your response in the following format:
-
-# Meeting Summary
-
-## Meeting Details
-- Date: [Meeting Date]
-- Title: [Meeting Title]
-
-## Executive Summary
-[Provide a concise 2-3 sentence summary of the meeting]
-
-## Key Points
-1. [First key point]
-2. [Second key point]
-3. [Third key point]
-...
-
-## Action Items
-- [ ] [Action item 1] - [Responsible person]
-- [ ] [Action item 2] - [Responsible person]
-...
-
-## Next Steps
-1. [Next step 1]
-2. [Next step 2]
-...
-
-Transcript:
-\"\"\"
-{transcript_text}
-\"\"\"
-"""}
+                    {"role": "user", "content": transcript_text}
                 ],
                 "temperature": 0.7,
-                "max_tokens": 2000
+                "max_tokens": 2000,
+                "top_p": 0.95,
+                "frequency_penalty": 0,
+                "presence_penalty": 0,
+                "stop": None
             }
             
             # 添加请求日志
